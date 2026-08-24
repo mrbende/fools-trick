@@ -95,24 +95,43 @@ its choices (IQ4_XS, q4_0 KV, `--parallel 1`, no `--jinja`) are wrong for agenti
 
 ```bash
 cd ~/Recipes/fools-trick
-./worker/serve.sh              # downloads Qwen3.8-27B-OBLITERATED Q4_K_M, serves on :8898
+./worker/serve.sh              # downloads Qwen3.8-27B-OBLITERATED i1-Q4_K_S, serves on :8898
 curl -s http://127.0.0.1:8898/v1/models   # wait for readiness
 ```
 
-Why this launcher differs (all grounded in small-model agentic tool-calling research):
+Why this launcher differs, tuned for the actual hardware (2x RTX 3080 Ti, 12 GB each,
+GPU0 shared with the desktop) and the model's real architecture:
 
-- **`--jinja`** — uses the model's tool-aware chat template instead of llama.cpp's generic
-  handler. This is the single biggest fix for small-model tool-call failures (raw `<tool_call>`
-  tags, empty args, format drift). Without it the workers are unreliable at the one thing we need.
-- **Qwen3.8-27B-OBLITERATED Q4_K_M (~16.9 GB)** — abliterated to match the orchestrator's
-  unhedged disposition; Q4_K_M is the tool-safe 4-bit floor that still leaves ~6 GB across both
-  cards for KV and parallel slots. Sub-4-bit degrades tool-call structure; Q5+ (19.6 GB) starves
-  KV and forces `--parallel 1`. Source: `mradermacher/Qwen3.8-27B-OBLITERATED-GGUF`.
-- **`-ctk q8_0 -ctv q8_0`** — tool-safe KV. The sibling recipe's `q4_0` KV is documented to
-  substantially degrade tool calling; the modest worker context affords near-lossless q8_0.
-- **`--parallel 4`** — four concurrent slots so the orchestrator can fan out four workers at once.
-  Total context is the KV budget divided across slots: 4 slots x 32k each. Override with
-  `PARALLEL=` and `CTX_PER_SLOT=`.
+- **The model is hybrid-recurrent, not dense.** `qwen35` interleaves Gated-DeltaNet/SSM layers
+  with attention. Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
+  Two consequences drive the config: KV is ~1/4 of a dense 27B (so 4 concurrent slots at 32k each
+  is affordable), and the recurrent state tensors cannot be row/tensor-split.
+- **`-sm layer`** — the ONLY split mode that loads this arch across two GPUs. Row/tensor split
+  fails on the SSM state tensors (the sibling recipe hit this). Layer (pipeline) split is forced.
+- **`-ts 9,12`** — VRAM-proportional layer split. GPU0 loses ~2 GB to the desktop, so layers are
+  biased toward GPU1 to avoid OOMing GPU0 at load. Adjust if the desktop footprint changes.
+- **Qwen3.8-27B-OBLITERATED i1-Q4_K_S (~15.9 GB)** — abliterated to match the orchestrator's
+  unhedged disposition. We use the **imatrix** (i1) repo, not the static one: activation-calibrated
+  quants are higher quality per byte at the same size. i1-Q4_K_S is mradermacher's "optimal
+  size/speed/quality" pick and, crucially, is the quant that fits 4 concurrent slots x 32k on
+  2x 12 GB with a cushion. Measured KV (this arch has ~16 of 65 blocks as attention, kv_heads=4,
+  head_dim=256 -> ~32 KB/token at q8_0): 4x32k KV+state ~4.3 GB + weights 15.9 + overhead ~1.5
+  = ~21.7 GB against ~21.7 GB usable. Q4_K_M (16.9 GB) would overrun at 4x32k. Sub-4-bit degrades
+  tool-call structure, so Q4_K_S is the floor. Source:
+  `mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF`.
+- **`-ctk q8_0 -ctv q8_0`, matched** — tool-safe KV. `q4_0` KV is documented to substantially
+  degrade tool calling; mixed K/V types cause a silent prefill collapse, so both must match.
+- **`-fa on`** — mandatory with quantized KV (context creation fails otherwise).
+- **`--parallel 4` at 32k/slot** — four concurrent workers; cheap here thanks to the small hybrid
+  KV. Total ctx = slots x per-slot; override with `WORKER_PARALLEL` / `WORKER_CTX_PER_SLOT`.
+- **`--cache-reuse 256`, `--no-context-shift`** — reuse KV across the growing histories of a
+  multi-turn agent loop; hard-stop at the context limit rather than silently truncating the
+  system prompt mid-task.
+- **No `--spec-*` (speculative decoding off)** — MTP spec halves prefill on a layer split
+  (llama.cpp #27428), CUDA acceptance collapses (#26750), and the abliterated GGUF likely dropped
+  the MTP head. We take correctness and prefill throughput over an untrustworthy decode speedup.
+- **`--temp 0.6 --top-p 0.95 --top-k 20`** — the Qwen3.x "precise" preset, stable for tool-calling.
+  No repeat-penalty (it corrupts JSON structure).
 - **`reasoning_effort medium`, no vision projector** — medium avoids the tool-use loop at `low`
   and the pre-call stall at `high`; workers read code, not images.
 
