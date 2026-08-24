@@ -1,0 +1,98 @@
+{
+  "$schema": "https://opencode.ai/config.json",
+  "autoupdate": false,
+  "default_agent": "build",
+  "subagent_depth": 2,
+  "instructions": ["AGENTS.md"],
+  "provider": {
+    "fool-ds4": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "fool (DeepSeek-V4-Flash, abliterated)",
+      "options": {
+        "baseURL": "http://fool:8888/v1",
+        "apiKey": "dummy",
+        "timeout": false
+      },
+      "models": {
+        "deepseek-v4-flash-0731": {
+          "name": "DeepSeek-V4-Flash-0731 EXL3-3.0bpw (fool, DGX Spark, ABLATE)",
+          "tool_call": true,
+          "reasoning": true,
+          "limit": {
+            "context": 384000,
+            "output": 32768
+          }
+        }
+      }
+    },
+    "magus": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "magus (Qwen3.8-27B-OBLITERATED, 2x3080Ti)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8898/v1",
+        "apiKey": "dummy",
+        "timeout": 300000
+      },
+      "models": {
+        "qwen3.8-27b-obliterated": {
+          "name": "Qwen3.8-27B-OBLITERATED Q4_K_M (magus, agentic worker)",
+          "tool_call": true,
+          "attachment": true,
+          "reasoning": true,
+          "limit": {
+            "context": 32768,
+            "output": 32768
+          }
+        }
+      }
+    }
+  },
+  "model": "fool-ds4/deepseek-v4-flash-0731",
+  "small_model": "magus/qwen3.8-27b-obliterated",
+  "agent": {
+    "build": {
+      "mode": "primary",
+      "model": "fool-ds4/deepseek-v4-flash-0731",
+      "prompt": "{file:./prompts/orchestrator.md}",
+      "temperature": 0.3,
+      "permission": {
+        "edit": "allow",
+        "bash": "allow",
+        "webfetch": "allow",
+        "external_directory": {
+          "/tmp/fools-trick/scratch/**": "allow"
+        },
+        "task": {
+          "*": "allow"
+        }
+      }
+    },
+    "plan": {
+      "mode": "primary",
+      "model": "fool-ds4/deepseek-v4-flash-0731",
+      "prompt": "{file:./prompts/orchestrator.md}",
+      "temperature": 0.1,
+      "permission": {
+        "edit": "deny",
+        "external_directory": {
+          "/tmp/fools-trick/scratch/**": "allow"
+        },
+        "task": {
+          "*": "allow",
+          "implementer": "deny",
+          "general": "deny"
+        },
+        "bash": {
+          "*": "ask",
+          "git status*": "allow",
+          "git diff*": "allow",
+          "git log*": "allow",
+          "ls*": "allow",
+          "cat*": "allow",
+          "grep*": "allow",
+          "rg*": "allow"
+        }
+      }
+    }
+  }
+}
