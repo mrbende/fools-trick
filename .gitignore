@@ -1,3 +1,4 @@
 .opencode/cache/
 .opencode/logs/
 .bench-venv/
+bench/__pycache__/
