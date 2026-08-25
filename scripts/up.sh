@@ -8,6 +8,26 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/config.sh"
 source "$HERE/lib.sh"
 
+up_redis() {
+  [ "${MEMORY_ENABLED:-1}" = "1" ] || { dim "memory disabled; skipping redis"; return 0; }
+  say "starting redis (short-term memory + write-queue) as $REDIS_CONTAINER"
+  # Ephemeral by design: short-term memory. The durable episode store is SQLite ($MEMORY_DB),
+  # which persists across make down. So the container needs no volume -- if it dies, short-term
+  # memory is gone but the source of truth is intact and Redis rewarms from it.
+  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$REDIS_CONTAINER"; then
+    ok "redis already running ($REDIS_CONTAINER)"; return 0
+  fi
+  docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || true
+  docker run -d --name "$REDIS_CONTAINER" -p "127.0.0.1:${REDIS_PORT}:6379" \
+    "$REDIS_IMAGE" redis-server --save "" --appendonly no >/dev/null \
+    || die "failed to start redis container (is docker running?)"
+  for _ in $(seq 1 20); do
+    docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG && { ok "redis healthy on :$REDIS_PORT"; return 0; }
+    sleep 0.5
+  done
+  die "redis did not become healthy"
+}
+
 up_worker() {
   say "starting worker on magus"
   if http_ok "$WORKER_URL/v1/models"; then
@@ -47,7 +67,7 @@ up_worker() {
       ok "worker healthy: $(models_id "$WORKER_URL" || echo "$WORKER_URL")"; return 0
     fi
     if ! worker_active && worker_load_oom; then
-      err "worker aborted at load: config does not fit in VRAM (n_ctx=$(( ${WORKER_PARALLEL:-4} * ${WORKER_CTX_PER_SLOT:-40960} )), KV=$WORKER_KV, ts=$WORKER_TENSOR_SPLIT)"
+      err "worker aborted at load: config does not fit in VRAM (n_ctx=$(( WORKER_PARALLEL * WORKER_CTX_PER_SLOT )), KV=$WORKER_KV, ts=$WORKER_TENSOR_SPLIT)"
       dim "  reduce WORKER_CTX_PER_SLOT or WORKER_PARALLEL, or use a smaller quant; see journalctl --user -u $WORKER_UNIT"
       return 3
     fi
@@ -92,8 +112,9 @@ up_fool() {
 }
 
 case "${1:-all}" in
+  redis)  up_redis ;;
   worker) up_worker ;;
   fool)   up_fool ;;
-  all)    up_worker; up_fool ;;
-  *) die "usage: up.sh {worker|fool|all}" ;;
+  all)    up_redis; up_worker; up_fool ;;
+  *) die "usage: up.sh {redis|worker|fool|all}" ;;
 esac

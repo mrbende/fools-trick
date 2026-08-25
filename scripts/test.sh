@@ -26,6 +26,14 @@ unit_tests() {
   echo
   say "unit: shell lib helpers"
   if bash "$ROOT/tests/test_lib.sh"; then ok "shell unit tests passed"; else err "shell unit tests FAILED"; fail=1; fi
+  echo
+  say "unit: memory layer (SQLite store + FTS; Redis round-trip if up)"
+  if command -v node >/dev/null 2>&1; then
+    if node "$ROOT/tests/test_memory.mjs" 2>&1 | grep -viE "ExperimentalWarning|trace-warnings"; then
+      ok "memory tests passed"; else err "memory tests FAILED"; fail=1; fi
+  else
+    dim "node not found; skipping memory tests"
+  fi
 }
 
 config_tests() {

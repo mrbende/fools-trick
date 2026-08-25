@@ -51,7 +51,7 @@ run_arm() {
   # Fits at load. Now probe under real load and confirm it does not spill to CPU: drive a
   # long-context request (fills a slot toward capacity), and while it runs, check GPU residency.
   say "arm '$label': probing VRAM residency under long-context load"
-  local probe_ctx=$(( ${WORKER_CTX_PER_SLOT:-40960} - 2048 ))
+  local probe_ctx=$(( WORKER_CTX_PER_SLOT - 2048 ))
   ( "$PY" "$SPEED" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --engine llama \
       --depths "$probe_ctx" --concurrency 4 --reps 1 --timeout 900 \
       --out "${COMPARE_DIR:-/tmp/fools-trick/compare}/probe-${label}.jsonl" >/dev/null 2>&1 ) &
@@ -62,7 +62,7 @@ run_arm() {
     # enough, the wedged slot must be torn down. Down the worker so the next arm starts clean.
     kill "$probe_pid" 2>/dev/null || true
     "$HERE/down.sh" worker >/dev/null 2>&1 || true
-    invalidate_arm "$label" "CPU-spill at ctx=$probe_ctx x ${WORKER_PARALLEL:-4} slots (GPU idle under load)"
+    invalidate_arm "$label" "CPU-spill at ctx=$probe_ctx x $WORKER_PARALLEL slots (GPU idle under load)"
     return 1
   fi
   wait "$probe_pid" 2>/dev/null || true

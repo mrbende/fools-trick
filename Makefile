@@ -80,6 +80,9 @@ bench-longctx: ## long-context: deep needle (passive) + agentic delegation-at-de
 .PHONY: bench-speed
 bench-speed: ## speed: TTFT/prefill/decode/concurrency/cache (both servers)
 	@$(S)/bench.sh speed
+.PHONY: bench-memory
+bench-memory: ## memory A/B: sliding-window+recall vs compaction on a long coding session (LLM-judged)
+	@SIZE=$(SIZE) $(S)/bench.sh memory
 .PHONY: bench-e2e
 bench-e2e: ## delegation: whole opencode harness on real fan-out tasks (DB-verified)
 	@$(S)/bench.sh e2e
@@ -118,3 +121,9 @@ fool-logs: ## tail only the orchestrator log (fool)
 .PHONY: fool-sync
 fool-sync: ## sync fool's spark clone to this repo's pinned commit
 	@$(S)/fool-sync.sh
+.PHONY: redis-up
+redis-up: ## start only the redis memory container (magus)
+	@$(S)/up.sh redis
+.PHONY: redis-down
+redis-down: ## stop the redis memory container (short-term memory is ephemeral; SQLite persists)
+	@$(S)/down.sh redis

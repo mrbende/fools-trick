@@ -54,7 +54,7 @@ worker_fit_ok() {
   [ "$WORKER_FIT" = "spill" ] && return 1
   serving "$WORKER_URL" || { WORKER_FIT="spill"; return 1; }
   say "checking worker VRAM residency under long-context load (one-time)"
-  local probe_ctx=$(( ${WORKER_CTX_PER_SLOT:-40960} - 2048 ))
+  local probe_ctx=$(( WORKER_CTX_PER_SLOT - 2048 ))
   ( "$PY" "$SPEED" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --engine llama \
       --depths "$probe_ctx" --concurrency 4 --reps 1 --timeout 900 \
       --out "$BENCH_DIR/fitprobe-$STAMP.jsonl" >/dev/null 2>&1 ) &
@@ -64,10 +64,10 @@ worker_fit_ok() {
     # worker so subsequent (fool-only) suites are not starved by a wedged CPU-grinding slot.
     kill "$pp" 2>/dev/null || true
     "$HERE/down.sh" worker >/dev/null 2>&1 || true
-    err "worker SPILLS to CPU at ctx=$probe_ctx x ${WORKER_PARALLEL:-4} (GPU idle under load) -- worker suites skipped, worker stopped"
+    err "worker SPILLS to CPU at ctx=$probe_ctx x $WORKER_PARALLEL (GPU idle under load) -- worker suites skipped, worker stopped"
     dim "  reduce WORKER_CTX_PER_SLOT so 4 full slots fit in VRAM, or use a smaller quant, then rerun"
     printf '{"test":"_worker_fit","summary":true,"valid":false,"reason":"cpu-spill at ctx=%s x %s"}\n' \
-      "$probe_ctx" "${WORKER_PARALLEL:-4}" >> "$BENCH_DIR/fit-$STAMP.jsonl"
+      "$probe_ctx" "$WORKER_PARALLEL" >> "$BENCH_DIR/fit-$STAMP.jsonl"
     WORKER_FIT="spill"; return 1
   fi
   wait "$pp" 2>/dev/null || true
@@ -223,6 +223,25 @@ e2e_run() {
     --out "$BENCH_DIR/e2e-$STAMP.jsonl" --md "$BENCH_DIR/e2e-$STAMP.md" --logfile "$LOG"
 }
 
+# Memory A/B: does sliding-window + recall beat opencode's compaction on a long coding session?
+# Runs both arms (on = memory plugin, off = MEMORY_ENABLED=0 compaction baseline), then diffs.
+# LLM-judged, closed-book-controlled, includes an agentic-recall probe (subagent findings must
+# survive the slide). bury-turns scales with SIZE so smoke is fast.
+MEMORY="$OPENCODE_PROJECT_DIR/bench/memory.py"
+memory_ab() {
+  command -v opencode >/dev/null || { warn "opencode missing; skip memory"; return; }
+  serving "$FOOL_URL" || { warn "orchestrator down; skip memory (judge+session need it)"; return; }
+  local bury; case "$SIZE" in smoke) bury=12;; small) bury=30;; large) bury=60;; max) bury=100;; *) bury=30;; esac
+  export MEMORY_BENCH_DIR="$BENCH_DIR/membench-$STAMP"
+  for arm in on off; do
+    step "memory[$arm] long coding session (bury=$bury) -- sliding-recall vs compaction"
+    "$PY" "$MEMORY" run --project "$OPENCODE_PROJECT_DIR" --arm "$arm" --bury-turns "$bury" \
+      --judge-url "$FOOL_URL" --judge-model "$FOOL_MODEL_ID" --logfile "$LOG"
+  done
+  step "memory A/B diff (does memory beat compaction)"
+  "$PY" "$MEMORY" diff --a on --b off | tee -a "$LOG"
+}
+
 case "${1:-all}" in
   capability) STEP_TOTAL=2; preflight; capability_worker; capability_fool; finish ;;
   code)       STEP_TOTAL=2; preflight; code_tools_worker; finish ;;
@@ -230,6 +249,7 @@ case "${1:-all}" in
   longctx)    STEP_TOTAL=2; preflight; longctx_fool; finish ;;
   speed)      STEP_TOTAL=2; preflight; speed_worker; speed_fool; finish ;;
   e2e)        STEP_TOTAL=1; preflight; e2e_run; finish ;;
+  memory)     STEP_TOTAL=3; preflight; memory_ab; finish ;;
   # quick: fast representative signal across the whole system -- capability + code/tools + e2e.
   quick)      SIZE=smoke; STEP_TOTAL=4; preflight; capability_worker; code_tools_worker; e2e_run; finish ;;
   # all: the full instrument. STEP_TOTAL counts each step() call across the run for ETA.

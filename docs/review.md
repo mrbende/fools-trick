@@ -26,7 +26,7 @@ this operating point is not.
   fool: DeepSeek-V4-Flash   deep, slow, single stream, 384k ctx, abliterated (runtime projection)
    |    (orchestrator)      plans / decomposes / dispatches / synthesizes
    v  (LAN, 10G, never Tailscale)
-  magus: Qwen3.8-27B x4     fast, concurrent, 24k ctx/slot (96k total), abliterated (OBLITERATED)
+  magus: Qwen3.8-27B x4     fast, concurrent, 32k ctx/slot (131k total), abliterated (OBLITERATED)
         (workers)           execute self-contained units: search, edit, review, research
 ```
 
@@ -40,8 +40,13 @@ and `worker/serve.sh`:
 - `-sm layer` is the ONLY split that loads this hybrid-recurrent arch on 2 GPUs (row/tensor
   split can't partition the SSM state tensors).
 - `-ts 10,12` biases layers off GPU0 (it loses ~1.9GB to the desktop).
-- 24k/slot not 32k: 4x32k OOM'd with no margin; 24k fits cleanly. 4 slots = 96k aggregate.
-- `q8_0` KV, matched K/V (mixed types silently collapse prefill; q4_0 degrades tool-calling).
+- 32768/slot (131072 aggregate across 4 slots): the measured max that stays fully GPU-resident
+  for Q4_K_S + q8_0 KV under real 4-slot long-context load (llama-batched-bench, ~66 t/s agg
+  ~1720 t/s all-GPU); 40960/slot spills the attention op to CPU.
+- `q8_0` KV, matched K/V: the quantized KV floor with a working CUDA flash-attn kernel for this
+  hybrid arch. q5_1 has NO CUDA FA kernel here -- with `-fa on` it silently falls back to CPU
+  (GPUs idle, cores peg, throughput craters) even with free VRAM. q8_0/f16 stay on GPU; mixed
+  K/V types silently collapse prefill; q4_0 degrades tool-calling.
 - `reasoning_effort=low`: the abliterated Qwen over-reasons; low keeps tool-calling intact at
   ~1/5 the tokens.
 - no `--spec-*`: MTP spec halves prefill on a layer split and the abliterated GGUF likely

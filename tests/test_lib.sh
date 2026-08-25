@@ -51,6 +51,23 @@ check "per-slot ctx matches opencode limit" "$WORKER_CTX_PER_SLOT" "$oc_limit"
 echo "config sanity: tensor-split has two comma-separated values"
 check "ts is N,N" "yes" "$([[ "$WORKER_TENSOR_SPLIT" =~ ^[0-9]+,[0-9]+$ ]] && echo yes || echo no)"
 
+# Guards the CPU-spill bug: on this hybrid (qwen35/GatedDeltaNet) arch, q5_1 and q4_0 KV have NO
+# CUDA flash-attention kernel, so with -fa on the attention op silently falls back to CPU (GPUs
+# idle, cores peg, throughput craters) even with free VRAM. Only q8_0 and f16 have working CUDA
+# kernels. WORKER_KV must be one of those two. This cost a full debugging session; never regress.
+echo "config sanity: worker KV type has a working CUDA FA kernel (q8_0 or f16, never q5_1/q4_0)"
+case "$WORKER_KV" in q8_0|f16) kv_ok=yes ;; *) kv_ok=no ;; esac
+check "WORKER_KV is GPU-resident-safe" "yes" "$kv_ok"
+
+# Guards the decode-headroom invariant of the sliding-window memory: input and output compete for
+# the orchestrator's context window. The live input window (WINDOW_INPUT_TOKENS) plus the reserved
+# decode budget (DECODE_HEADROOM) MUST stay under the orchestrator's context, or output tokens have
+# no room to do real work. 384000 is DeepSeek-V4-Flash's MAX_MODEL_LEN.
+echo "config sanity: sliding window + decode headroom fits under orchestrator context"
+fool_ctx="$(python3 -c "import json;print(json.load(open('$ROOT/opencode.json'))['provider']['fool-ds4']['models']['$FOOL_MODEL_ID']['limit']['context'])" 2>/dev/null)"
+budget=$(( WINDOW_INPUT_TOKENS + DECODE_HEADROOM ))
+check "window+headroom < fool context" "yes" "$([ "$budget" -lt "${fool_ctx:-0}" ] && echo yes || echo no)"
+
 # Guards the doom-loop bug: if a model's output limit >= its context limit, opencode's
 # compaction headroom math (context - output) goes non-positive and it compacts the session
 # every turn, making workers amnesiac (re-read the same file forever). output MUST be < context.

@@ -6,6 +6,10 @@
   "instructions": [
     "AGENTS.md"
   ],
+  "compaction": {
+    "auto": false,
+    "prune": false
+  },
   "provider": {
     "fool-ds4": {
       "npm": "@ai-sdk/openai-compatible",
@@ -42,7 +46,7 @@
           "attachment": true,
           "reasoning": true,
           "limit": {
-            "context": 40960,
+            "context": 32768,
             "output": 8192
           }
         }

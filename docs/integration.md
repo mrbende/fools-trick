@@ -35,7 +35,7 @@ now carries only machine-wide preferences; providers live in the projects that u
 | Provider (project) | Endpoint | Model | Context | Role |
 |---|---|---|---|---|
 | `fool-ds4` | `http://fool:8888/v1` | `deepseek-v4-flash-0731` (abliterated, EXL3) | 384000 | orchestrator (deep, slow) |
-| `magus` | `http://127.0.0.1:8898/v1` | `qwen3.8-27b-obliterated` (i1-Q4_K_S) | 24576/slot, 96k total | workers (fast, concurrent) |
+| `magus` | `http://127.0.0.1:8898/v1` | `qwen3.8-27b-obliterated` (i1-Q4_K_S) | 32768/slot, 131072 total | workers (fast, concurrent) |
 
 `fool` resolves via `/etc/hosts` to the LAN address (192.168.1.11), NEVER Tailscale. The
 worker is local on magus. Both `apiKey` are `dummy` (local servers, no auth). Both provider
@@ -78,11 +78,11 @@ computes compaction headroom roughly as `context - output` (it reserves the outp
 response headroom). If `output >= context`, that headroom is non-positive and opencode compacts
 the session on almost every turn.
 
-For a worker with a small 24k window this was catastrophic: `output: 32768 > context: 24576`
-made each worker compact away its own working memory every turn, so it forgot files it had just
+For a worker window this was catastrophic: `output: 32768 = context: 32768` (headroom zero,
+non-positive) made each worker compact away its own working memory every turn, so it forgot files it had just
 read and re-read them forever -- a doom loop that looked like the worker "taking forever" or
 "over-generating" (measured: one explore worker read the same config.sh 4 times, 65 compaction
-events, 132 turns, 10-23k tokens for a two-line summary). The fix was `output: 8192` (< 24576).
+events, 132 turns, 10-23k tokens for a two-line summary). The fix was `output: 8192` (< 32768).
 After: 1 read, 0 compactions, 3 turns, 69 tokens.
 
 This is guarded by a test (`tests/test_lib.sh`, "output < context for all models"). Do not set a

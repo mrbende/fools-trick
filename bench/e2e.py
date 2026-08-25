@@ -100,9 +100,9 @@ def default_tasks():
          "prompt": "What port does the worker serve on, per scripts/config.sh? Answer with just the number.",
          "expect": r"8898", "min_subagents": 0},
         {"name": "reasoning",
-         "prompt": ("If the worker runs 4 parallel slots and each holds 24576 tokens, what is the "
+         "prompt": ("If the worker runs 4 parallel slots and each holds 32768 tokens, what is the "
                     "total KV context in tokens? Answer with the number."),
-         "expect": r"98304|98,304", "min_subagents": 0},
+         "expect": r"131072|131,072", "min_subagents": 0},
         {"name": "substantive-audit",
          "prompt": ("Dispatch one worker to read scripts/down.sh and write a concise "
                     "function-by-function audit (one short paragraph per function: purpose, "

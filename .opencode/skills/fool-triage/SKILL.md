@@ -64,8 +64,8 @@ Read it:
   output tokens exceeds a 300s cap. Runaway workers are bounded by `steps`, not wall time.
 - **Worker OOM / degraded load.** If the worker won't hold context or 400s on large prompts,
   check its load log for `cudaMalloc failed` / `retrying without pipeline parallelism`. The fix is
-  fewer/smaller slots (`WORKER_CTX_PER_SLOT`, `WORKER_PARALLEL`) -- it fits 4x24k, not 4x32k.
-- **Depth over the worker's per-slot limit.** A prompt above `WORKER_CTX_PER_SLOT` (24576) 400s.
+  fewer/smaller slots (`WORKER_CTX_PER_SLOT`, `WORKER_PARALLEL`) -- Q4_K_S fits 4x32768, not 4x40960.
+- **Depth over the worker's per-slot limit.** A prompt above `WORKER_CTX_PER_SLOT` (32768) 400s.
 - **fool not synced.** `make status` flags DRIFT if fool's spark clone diverges from the pin;
   `make fool-sync`.
 - **Effort too high.** If every orchestrator turn is glacial, confirm `FOOL_EFFORT=high` (not

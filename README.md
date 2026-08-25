@@ -104,29 +104,35 @@ GPU0 shared with the desktop) and the model's real architecture:
 
 - **The model is hybrid-recurrent, not dense.** `qwen35` interleaves Gated-DeltaNet/SSM layers
   with attention. Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
-  Two consequences drive the config: KV is ~1/4 of a dense 27B (so 4 concurrent slots at 48k each,
+  Two consequences drive the config: KV is ~1/4 of a dense 27B (so 4 concurrent slots at 32k each
   is affordable), and the recurrent state tensors cannot be row/tensor-split.
 - **`-sm layer`** — the ONLY split mode that loads this arch across two GPUs. Row/tensor split
   fails on the SSM state tensors (the sibling recipe hit this). Layer (pipeline) split is forced.
 - **`-ts 10,12`** — VRAM-proportional layer split. GPU0 loses ~1.9 GB to the desktop, so layers are
   biased toward GPU1 to avoid OOMing GPU0 at load. Adjust if the desktop footprint changes.
-- **Qwen3.8-27B-OBLITERATED i1-Q4_K_S (~15.9 GB)** — abliterated to match the orchestrator's
+- **Qwen3.8-27B-OBLITERATED i1-Q4_K_S (14.74 GB GGUF)** — abliterated to match the orchestrator's
   unhedged disposition. We use the **imatrix** (i1) repo, not the static one: activation-calibrated
   quants are higher quality per byte at the same size. i1-Q4_K_S is mradermacher's "optimal
-  size/speed/quality" pick and the quant that fits 4 concurrent slots x 48k (q5_1 KV) on 2x 12 GB. Measured
-  KV (this arch has ~16 of 65 blocks as attention, kv_heads=4, head_dim=256 -> ~32 KB/token at
-  q5_1): weights 15.8 + KV(4x48k q5_1) ~4.7 + per-GPU compute buffers ~1.4 fits cleanly in the
-  ~21.9 GB usable. At q8_0 KV, 4x32k left no margin; switching KV to q5_1 (tool-safe, ~30% cheaper
-  than q8_0) is what lets 4x48k fit -- 2x the per-slot context at full concurrency, no model change.
+  size/speed/quality" pick and the quant chosen because it holds tool-calling (87.5%, 7/8) and code
+  (93.3%). Smaller quants were tested and rejected: IQ3_M drops tool-calling to 75%, Q3_K_M drops
+  code to 80%. The frontier is weight-size-bound -- every ~2 GB of weights freed buys ~8k more
+  ctx/slot (Q3_K_M reaches 40960, IQ3_M 49152+) -- but that context is not worth the quality loss.
   Q4_K_M (16.9 GB) would overrun; sub-4-bit degrades tool-call structure, so Q4_K_S is the floor.
   Source:
   `mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF`.
-- **`-ctk q8_0 -ctv q8_0`, matched** — tool-safe KV. `q4_0` KV is documented to substantially
-  degrade tool calling; mixed K/V types cause a silent prefill collapse, so both must match.
+- **`-ctk q8_0 -ctv q8_0`, matched** — the quantized KV floor that stays fully on-GPU for this arch.
+  q5_1 KV has NO working CUDA flash-attention kernel for this hybrid qwen35/GatedDeltaNet arch on
+  Ampere: with `-fa on` it silently falls back to CPU for the attention op (GPUs go idle, ~30 cores
+  peg, throughput craters) even with GBs of VRAM free. q8_0 and f16 both run fully on GPU; q8_0 is
+  the quantized floor that stays on-GPU. K and V must match (mixed types cause a silent prefill
+  collapse). This was the root-cause bug of a long debugging session: the config had drifted to
+  q5_1, which made every context size CPU-bound. Do NOT set q5_1/q4_0 here.
 - **`-fa on`** — mandatory with quantized KV (context creation fails otherwise).
-- **`--parallel 4` at 48k/slot** — four concurrent workers (96k total context); cheap here thanks
-  to the small hybrid KV. Total ctx = slots x per-slot; override with `WORKER_PARALLEL` /
-  `WORKER_CTX_PER_SLOT`.
+- **`--parallel 4` at 32k/slot** — four concurrent workers (131072 total context); cheap here thanks
+  to the small hybrid KV. 32768/slot is the MEASURED max that stays fully GPU-resident for Q4_K_S +
+  q8_0 KV under real 4-slot long-context load (llama-batched-bench: ~66 t/s aggregate ~1720 t/s, all
+  GPU). 40960/slot does NOT fit for Q4_K_S (KV overflow spills attention to CPU). Total ctx = slots x
+  per-slot; override with `WORKER_PARALLEL` / `WORKER_CTX_PER_SLOT`.
 - **`--cache-reuse 256`, `--no-context-shift`** — reuse KV across the growing histories of a
   multi-turn agent loop; hard-stop at the context limit rather than silently truncating the
   system prompt mid-task.
@@ -138,7 +144,7 @@ GPU0 shared with the desktop) and the model's real architecture:
 - **`reasoning_effort medium`, no vision projector** — medium avoids the tool-use loop at `low`
   and the pre-call stall at `high`; workers read code, not images.
 
-The `limit.context: 49152` on the `magus` provider in `opencode.json` matches the per-slot context.
+The `limit.context: 32768` on the `magus` provider in `opencode.json` matches the per-slot context.
 Keep them equal: if you change `CTX_PER_SLOT`, change the provider limit too.
 
 ## Bring up the orchestrator on fool (abliterated, 384k)
