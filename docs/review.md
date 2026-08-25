@@ -1,0 +1,161 @@
+# fools-trick: a first-principles review
+
+A ground-up account of what this system is, why each layer is shaped the way it is, what is
+verified working, and where the real edges are. Written against the system as it actually runs
+(both nodes up, all tests green at time of writing), not from memory.
+
+## The one idea
+
+Most agent systems treat the big model as the expensive thing to *avoid calling* (route work
+to cheap models to save cost). fools-trick inverts that: the big deep model is the **scarce
+reasoning resource to protect**, and the small fast models are cheap labor to offload onto. The
+orchestrator is deliberately the slow bottleneck; worker concurrency is the scaling lever. That
+reframing -- local, throughput-bound-orchestrator, worker-concurrency-as-scaling -- is the
+system's actual novel operating point. The pattern (big plans, small execute) is well-trodden;
+this operating point is not.
+
+## The four layers
+
+```
+  YOU
+   |
+   v
+  opencode harness  ------  prompt + orchestration strategy (prompts/, AGENTS.md, .opencode/)
+   |                        the build agent = DeepSeek orchestrator, delegating via the Task tool
+   v
+  fool: DeepSeek-V4-Flash   deep, slow, single stream, 384k ctx, abliterated (runtime projection)
+   |    (orchestrator)      plans / decomposes / dispatches / synthesizes
+   v  (LAN, 10G, never Tailscale)
+  magus: Qwen3.8-27B x4     fast, concurrent, 24k ctx/slot (96k total), abliterated (OBLITERATED)
+        (workers)           execute self-contained units: search, edit, review, research
+```
+
+Each layer, from first principles:
+
+### Layer 1 -- Inference serving (the two model servers)
+
+**Worker (magus, llama.cpp):** Qwen3.8-27B-OBLITERATED, i1-Q4_K_S GGUF, served across 2x RTX
+3080 Ti. Every serving choice is forced by hard constraints, all documented in `scripts/config.sh`
+and `worker/serve.sh`:
+- `-sm layer` is the ONLY split that loads this hybrid-recurrent arch on 2 GPUs (row/tensor
+  split can't partition the SSM state tensors).
+- `-ts 10,12` biases layers off GPU0 (it loses ~1.9GB to the desktop).
+- 24k/slot not 32k: 4x32k OOM'd with no margin; 24k fits cleanly. 4 slots = 96k aggregate.
+- `q8_0` KV, matched K/V (mixed types silently collapse prefill; q4_0 degrades tool-calling).
+- `reasoning_effort=low`: the abliterated Qwen over-reasons; low keeps tool-calling intact at
+  ~1/5 the tokens.
+- no `--spec-*`: MTP spec halves prefill on a layer split and the abliterated GGUF likely
+  dropped the MTP head.
+
+**Orchestrator (fool, real vLLM on DGX Spark):** DeepSeek-V4-Flash, EXL3 3.0bpw, 384k context,
+served from local coalesced data/tp1 (NAS holds only a cold archive). Abliteration is a
+**runtime projection** (`ABLATE=1`): a refusal direction projected out of layers 10-42 every
+forward pass, no weight edit, reversible by a flag. `FOOL_EFFORT=high` (not max: ~30% faster,
+identical answers).
+
+Verified serving facts (live, this session):
+- Worker `/v1/chat/completions` returns logprobs; `/v1/completions` returns OpenAI shape but
+  cannot echo PROMPT logprobs -> no loglikelihood MC on the worker.
+- Orchestrator `/v1/completions` DOES support `echo`+`prompt_logprobs` -> loglikelihood MC
+  (MMLU/ARC) works there (verified mmlu_anatomy acc=1.0). An earlier "blocked" verdict was a
+  stale server boot; corrected.
+
+### Layer 2 -- Ops (scripts/, worker/)
+
+Production-minded shell, ~1000 lines. Idempotent bootstrap; check-first weight provisioning
+(NAS-canonical -> local NVMe fast-copy); git-sync gating that refuses to serve fool from a
+dirty/divergent tree; systemd `--user` transient unit for the worker with journald ownership;
+scoped teardown (`fuser -k` on our port, never a blanket pkill). `make` is the operator surface:
+`up/down/status/health/logs/bootstrap/weights/test/bench`.
+
+### Layer 3 -- Orchestration strategy (prompts/orchestrator.md, AGENTS.md, .opencode/)
+
+The intellectual core. The orchestrator prompt (172 lines) says: you are one deep slow stream,
+delegate aggressively via the Task tool, fan out wide in one turn, every dispatch is a complete
+four-part work order (GOAL/INPUTS/OUTPUT/BOUNDARIES), synthesize don't concatenate, write large
+worker output to shared scratch and return only a reference, verify against real signals before
+declaring done. Plus the persona: abliterated (unhedged engineer), non-sycophantic, rigorous
+theory-of-mind, open on questions of mind (functional, non-asserting) -- with the one empirical
+guardrail that consciousness-*steering* (not the disposition) degrades ToM, so we use ablation
+only.
+
+Five worker subagents, each scoped and permission-gated: `explore`/`scout`/`reviewer` (read-only),
+`implementer`/`general` (edit). All pinned to magus. Critical invariant learned the hard way:
+**no subagent permission may be `ask`** (a non-interactive worker hangs forever on an approval
+nobody answers) -- everything a worker needs is `allow`, everything forbidden is `deny`, and all
+five have the scratch-dir grant.
+
+Enforcement is in code, not just prose: `.opencode/plugin/gates.js` -- the human-gate (hard-blocks
+destructive git/push/terraform/publish via `tool.execute.before` throw) and the verify-gate
+(deterministic evidence tracking on code edits). `.opencode/plugin/web.js` -- browser tools over
+the Camofox server.
+
+### Layer 4 -- Benchmark harness (bench/, ~1440 lines)
+
+The measurement instrument. Verified working:
+- `capability.py` -- thin wrapper over EleutherAI lm-evaluation-harness (the field standard, so
+  numbers are comparable). Routes loglikelihood MC (MMLU/ARC/HellaSwag/WinoGrande) to the
+  orchestrator via the completions client; generative tasks (gsm8k/ifeval/humaneval_plus/
+  mbpp_plus) to either node via the chat client. Size tiers (smoke/small/large/max) with RANDOM
+  sampling (via `--samples`, not first-N, so small runs are representative).
+- `e2e.py` -- the novel one: runs real fan-out tasks through `opencode run --format json`,
+  cross-checks the opencode SQLite DB for child sessions + provider, requires BOTH correctness
+  AND delegation to pass. VERIFIED 4/4 post-compaction-fix.
+- `speed.py` -- TTFT/prefill/decode/concurrency/cache on both nodes.
+- `compare.py`/`compare.sh` -- abliterated-vs-base A/B orchestration.
+- `report.py` -- consolidated scorecard aggregation.
+- `bench.sh` -- driver with preflight health/plan, SIZE tiers, cross-harness ETA/progress.
+
+## What is verified working (not claimed -- tested this session)
+
+- Both servers up and healthy; served model ids match config.
+- All unit tests green (bench parsers + shell lib + config sanity incl. the output<context guard).
+- e2e delegation: 4/4, real subagents on magus, artifacts written, doom loop gone.
+- lm-eval capability: gsm8k/ifeval/mbpp_plus on worker; MMLU loglikelihood on orchestrator.
+- The compaction doom-loop root cause found and fixed (output limit was > context limit ->
+  compaction every turn -> amnesiac workers re-reading the same file forever).
+
+## The hard-won lessons (each was a real bug this session)
+
+1. **A symptom that looks behavioral can be a config bug.** Workers looked weak/over-eager;
+   they were starved of memory by an inverted output/context limit. Investigate the mechanism
+   before patching behavior.
+2. **Non-interactive workers must never hit an `ask` permission** -- it hangs forever.
+3. **Provider timeout must be unbounded** for slow-but-legitimate worker work; bound runaways by
+   `steps`, not wall-clock.
+4. **Verify against the live endpoint, not memory.** Two "hard blocked" verdicts this session
+   were wrong (stale server boot); live re-checks corrected them.
+5. **Don't reinvent standardized tools.** The hand-rolled gsm8k/code/tools/refusal evals were
+   inferior duplicates of lm-eval/BFCL/HarmBench-standard harnesses; the rigorous path is to
+   orchestrate the real ones and keep only the genuinely novel piece (e2e delegation).
+
+## The honest gaps (itemized, prioritized)
+
+Built and verified: capability (lm-eval), e2e delegation, speed, compare, ops, orchestration.
+Not yet built:
+1. **BFCL** tool-calling harness -- path fully scoped (bfcl-eval, `--skip-server-setup`,
+   `REMOTE_OPENAI_BASE_URL`, Qwen3-FC handler, `--run-ids` subset). Ready to build.
+2. **Safety harness** -- AdvBench/HarmBench/JBB/XSTest + StrongREJECT rubric (on the orchestrator;
+   priestess has no GPU for the HarmBench classifier). The abliteration research centerpiece.
+3. **Long-context agentic eval** -- delegation at 100k+ orchestrator context. Genuinely novel;
+   nobody has this. Needs design.
+4. **Migrate the deep-needle test** (32k-370k, the only thing exercising the 384k window) into
+   the new harness structure.
+5. **Wire it together** -- bench.sh node-routing, delete hand-rolled evals, adopt zeta's output
+   patterns (per-run dir, manifest, summary.json+md, median+p95 latency).
+6. **SWE-bench / LiveCodeBench** (heavy, real agentic coding) and **memory eval** (LongMemEval/DMR,
+   once a memory layer exists) -- later.
+
+## The three things this system measures, which are genuinely different
+
+The reason a single uniform suite doesn't fit: the three tiers answer different questions.
+- **Worker (Qwen):** throughput + generative capability + tool-calling. Fast, shallow, concurrent.
+- **Orchestrator (DeepSeek):** deep reasoning + long-context + loglikelihood MC. Slow, deep, single.
+- **The harness between them:** delegation correctness + agentic behavior at long context. The
+  novel contribution, and the least-covered by any existing benchmark.
+
+## State of the tree
+
+47 files tracked, ~17 changed/untracked (this session's work: capability.py, compare.py,
+report.py, compare.sh untracked; eval.py/bench.sh/config.sh/opencode.json/agents/tests modified).
+Everything uncommitted -- a clean consolidation/commit point.

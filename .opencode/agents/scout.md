@@ -2,7 +2,7 @@
 description: External docs and dependency research. Inspects library APIs, upstream source, and version behavior. Use before assuming a dependency lacks a capability. Read-only on the workspace. Runs on magus Qwen3.8-27B-OBLITERATED.
 mode: subagent
 model: magus/qwen3.8-27b-obliterated
-steps: 25
+steps: 30
 temperature: 0.2
 permission:
   edit: deny

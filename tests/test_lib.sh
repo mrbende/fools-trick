@@ -51,6 +51,23 @@ check "per-slot ctx matches opencode limit" "$WORKER_CTX_PER_SLOT" "$oc_limit"
 echo "config sanity: tensor-split has two comma-separated values"
 check "ts is N,N" "yes" "$([[ "$WORKER_TENSOR_SPLIT" =~ ^[0-9]+,[0-9]+$ ]] && echo yes || echo no)"
 
+# Guards the doom-loop bug: if a model's output limit >= its context limit, opencode's
+# compaction headroom math (context - output) goes non-positive and it compacts the session
+# every turn, making workers amnesiac (re-read the same file forever). output MUST be < context.
+echo "config sanity: every model's output limit is below its context limit"
+bad="$(python3 -c "
+import json
+c=json.load(open('$ROOT/opencode.json'))
+bad=[]
+for pid,p in c.get('provider',{}).items():
+    for mid,m in p.get('models',{}).items():
+        lim=m.get('limit',{})
+        if 'context' in lim and 'output' in lim and lim['output']>=lim['context']:
+            bad.append(f'{pid}/{mid}')
+print(','.join(bad))
+" 2>/dev/null)"
+check "output < context for all models" "" "$bad"
+
 echo
 echo "shell lib: $pass passed, $fail failed"
 [ "$fail" -eq 0 ]

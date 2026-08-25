@@ -26,7 +26,51 @@ E2E="$OPENCODE_PROJECT_DIR/bench/e2e.py"
 LOG="$BENCH_DIR/$STAMP.log"
 
 [ -x "$PY" ] || die "bench venv missing ($PY). create: python3 -m venv .bench-venv && .bench-venv/bin/pip install datasets rich"
+REPORT="$OPENCODE_PROJECT_DIR/bench/report.py"
+CAP="$OPENCODE_PROJECT_DIR/bench/capability.py"
+WORKER_TOKENIZER="${WORKER_TOKENIZER:-Qwen/Qwen3.8-27B}"
 serving() { http_ok "$1/v1/models" || http_ok "$1/health"; }
+
+# SIZE selects how many RANDOM samples per task each harness runs: smoke|small|large|max.
+# It threads to every harness (lm-eval --size, safety --n, e2e task subset) so one flag
+# controls the whole run's cost. Default small = fast, representative.
+SIZE="${SIZE:-small}"
+
+# --- cross-harness progress + ETA ---------------------------------------------
+# Each harness is one "step"; we time completed steps and project the remainder so a long
+# run is legible: "[3/7] safety[harmful] ... ~12m elapsed, ~9m left".
+STEP_TOTAL="${STEP_TOTAL:-0}"; STEP_I=0; RUN_T0="$(date +%s)"
+step() {
+  STEP_I=$((STEP_I + 1))
+  local now elapsed avg left
+  now="$(date +%s)"; elapsed=$((now - RUN_T0))
+  if [ "$STEP_I" -gt 1 ] && [ "$STEP_TOTAL" -gt 0 ]; then
+    avg=$(( elapsed / (STEP_I - 1) )); left=$(( avg * (STEP_TOTAL - STEP_I + 1) ))
+    say "[$STEP_I/$STEP_TOTAL] $*   (~$((elapsed/60))m elapsed, ~$((left/60))m left)"
+  else
+    say "[$STEP_I/${STEP_TOTAL:-?}] $*"
+  fi
+}
+
+preflight() {
+  say "fools-trick benchmark  (stamp $STAMP, size=$SIZE)"
+  local w f
+  serving "$WORKER_URL" && w="up" || w="DOWN"
+  serving "$FOOL_URL" && f="up" || f="DOWN"
+  dim "  worker (magus)      $WORKER_URL   [$w]"
+  dim "  orchestrator (fool) $FOOL_URL   [$f]"
+  [ "$w" = "DOWN" ] && warn "worker down -> worker suites will be skipped"
+  [ "$f" = "DOWN" ] && warn "orchestrator down -> fool + e2e suites will be skipped/fail"
+  dim "  results -> $BENCH_DIR/  (size=$SIZE)"
+  echo
+}
+
+finish() {
+  echo
+  "$PY" "$REPORT" --dir "$BENCH_DIR" --stamp "$STAMP" \
+    --md "$BENCH_DIR/report-$STAMP.md" 2>/dev/null || true
+  ok "results under $BENCH_DIR (stamp $STAMP)"
+}
 
 speed_worker() {
   serving "$WORKER_URL" || { warn "worker not serving; skipping speed-worker"; return; }
@@ -45,14 +89,22 @@ speed_fool() {
 
 eval_worker() {
   serving "$WORKER_URL" || { warn "worker not serving; skipping eval-worker"; return; }
-  "$PY" "$EVAL" gsm8k --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n 40 \
-    --out "$BENCH_DIR/eval-worker-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
-  "$PY" "$EVAL" ruler --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --lengths 4096 8192 16384 --n 20 \
-    --out "$BENCH_DIR/eval-worker-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
+  local jl="$BENCH_DIR/eval-worker-$STAMP.jsonl" md="$BENCH_DIR/eval-$STAMP.md"
+  local n_gsm=40 n_code=15
+  [ "$QUICK" = "1" ] && { n_gsm=10; n_code=5; }
+  "$PY" "$EVAL" gsm8k --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n "$n_gsm" \
+    --out "$jl" --md "$md" --logfile "$LOG"
   # Real coding: worker completes HumanEval+ functions, we execute the tests. The workers'
   # actual job -- this is the eval that measures whether they can write correct code.
-  "$PY" "$EVAL" code --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n 15 --timeout 300 \
-    --out "$BENCH_DIR/eval-worker-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
+  "$PY" "$EVAL" code --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n "$n_code" --timeout 300 \
+    --out "$jl" --md "$md" --logfile "$LOG"
+  # Tool-calling (BFCL-style): the worker's other core competency, and the signal that is
+  # unmeasured on abliterated models -- does it call the right function, and NOT over-trigger.
+  "$PY" "$EVAL" tools --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --timeout 120 \
+    --out "$jl" --md "$md" --logfile "$LOG"
+  # ruler (long-context) is slower; full run only.
+  [ "$QUICK" = "1" ] || "$PY" "$EVAL" ruler --url "$WORKER_URL" --model "$WORKER_MODEL_ID" \
+    --lengths 4096 8192 16384 --n 20 --out "$jl" --md "$md" --logfile "$LOG"
 }
 eval_fool() {
   serving "$FOOL_URL" || { warn "orchestrator not serving; skipping eval-fool"; return; }
@@ -79,11 +131,11 @@ e2e_run() {
 }
 
 case "${1:-all}" in
-  speed) case "${2:-both}" in worker) speed_worker;; fool) speed_fool;; both|*) speed_worker; speed_fool;; esac ;;
-  eval)  case "${2:-both}" in worker) eval_worker;; fool) eval_fool;; both|*) eval_worker; eval_fool;; esac ;;
-  e2e)   e2e_run ;;
-  all)   speed_worker; speed_fool; eval_worker; eval_fool; e2e_run ;;
-  *) die "usage: bench.sh {speed|eval|e2e|all} [worker|fool|both]" ;;
+  speed) preflight; case "${2:-both}" in worker) speed_worker;; fool) speed_fool;; both|*) speed_worker; speed_fool;; esac; finish ;;
+  eval)  preflight; case "${2:-both}" in worker) eval_worker;; fool) eval_fool;; both|*) eval_worker; eval_fool;; esac; finish ;;
+  e2e)   preflight; e2e_run; finish ;;
+  all)   preflight; speed_worker; speed_fool; eval_worker; eval_fool; e2e_run; finish ;;
+  # quick: fast end-to-end signal -- worker evals (small n) + e2e, skip slow fool/speed suites.
+  quick) QUICK=1; preflight; eval_worker; e2e_run; finish ;;
+  *) die "usage: bench.sh {speed|eval|e2e|all|quick} [worker|fool|both]" ;;
 esac
-
-echo; ok "results under $BENCH_DIR (stamp $STAMP)"

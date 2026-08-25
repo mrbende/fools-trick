@@ -41,7 +41,7 @@
           "reasoning": true,
           "limit": {
             "context": 24576,
-            "output": 32768
+            "output": 8192
           }
         }
       }

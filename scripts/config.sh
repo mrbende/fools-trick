@@ -30,6 +30,11 @@ WORKER_REPO="${WORKER_REPO:-mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF}"
 WORKER_QUANT="${WORKER_QUANT:-i1-Q4_K_S}"
 WORKER_FILE="${WORKER_FILE:-Qwen3.8-27B-OBLITERATED.${WORKER_QUANT}.gguf}"
 
+# Stock (non-abliterated) base of the SAME model, for the abliteration A/B comparison.
+# IQ4_XS (15.7 GB) is the closest size match to the abliterated i1-Q4_K_S (15.8 GB) -- the
+# fair arm, since quant size is held ~constant so the only variable is the abliteration.
+WORKER_BASE_PATH="${WORKER_BASE_PATH:-$LOCAL_MODELS/qwen3.8-27b/Qwen3.8-27B-IQ4_XS.gguf}"
+
 # --- serving shape (worker) ---
 # Qwen3.8-27B is a HYBRID-recurrent arch (qwen35: Gated-DeltaNet/SSM + attention),
 # not dense. Consequences, all load-bearing:

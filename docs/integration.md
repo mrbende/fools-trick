@@ -70,3 +70,20 @@ Rule of thumb: a worker's config must guarantee that everything it legitimately 
 is registered there so `tp` opens a session with preset windows (editor, opencode, worker
 logs, status). The two repos stay decoupled otherwise: fools-trick is a self-contained
 recipe with its own `make` targets; `.magus-config` only knows how to open a window in it.
+
+## The compaction / doom-loop invariant (hard-won)
+
+A model's `output` limit in opencode.json MUST be less than its `context` limit. opencode
+computes compaction headroom roughly as `context - output` (it reserves the output budget as
+response headroom). If `output >= context`, that headroom is non-positive and opencode compacts
+the session on almost every turn.
+
+For a worker with a small 24k window this was catastrophic: `output: 32768 > context: 24576`
+made each worker compact away its own working memory every turn, so it forgot files it had just
+read and re-read them forever -- a doom loop that looked like the worker "taking forever" or
+"over-generating" (measured: one explore worker read the same config.sh 4 times, 65 compaction
+events, 132 turns, 10-23k tokens for a two-line summary). The fix was `output: 8192` (< 24576).
+After: 1 read, 0 compactions, 3 turns, 69 tokens.
+
+This is guarded by a test (`tests/test_lib.sh`, "output < context for all models"). Do not set a
+model's output limit at or above its context limit.

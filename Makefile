@@ -75,6 +75,12 @@ bench-eval: ## quality: real gsm8k + ruler reasoning-at-depth (both servers)
 .PHONY: bench-e2e
 bench-e2e: ## the real eval: whole opencode harness on real fan-out tasks
 	@$(S)/bench.sh e2e
+.PHONY: bench-quick
+bench-quick: ## fast signal: worker evals (small n) + e2e, skip slow fool/speed suites
+	@$(S)/bench.sh quick
+.PHONY: bench-compare
+bench-compare: ## abliterated-vs-base A/B on the worker (gsm8k+code+tools), then diff
+	@$(S)/compare.sh all
 
 ##@ Per-node (advanced)
 .PHONY: worker-up

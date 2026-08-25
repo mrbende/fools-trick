@@ -115,6 +115,44 @@ class TestCodeEval(unittest.TestCase):
         self.assertEqual(detail, "timeout")
 
 
+class TestToolScoring(unittest.TestCase):
+    """tools eval scorer: order-independent AST match, tolerant arg values, irrelevance."""
+
+    def test_simple_match(self):
+        case = {"expect": [("get_weather", {"city": "Tokyo"})]}
+        ok, _ = ev.score_tool_case(case, [("get_weather", {"city": "Tokyo"})])
+        self.assertTrue(ok)
+
+    def test_numeric_coercion(self):
+        case = {"expect": [("add", {"a": 5, "b": 8})]}
+        ok, _ = ev.score_tool_case(case, [("add", {"a": "5", "b": 8})])
+        self.assertTrue(ok)
+
+    def test_wrong_function(self):
+        case = {"expect": [("send_email", {"to": "x@y.com"})]}
+        ok, _ = ev.score_tool_case(case, [("get_weather", {"city": "x"})])
+        self.assertFalse(ok)
+
+    def test_parallel_order_independent(self):
+        case = {"expect": [("get_weather", {"city": "Paris"}), ("get_weather", {"city": "London"})]}
+        ok, _ = ev.score_tool_case(case, [("get_weather", {"city": "London"}),
+                                          ("get_weather", {"city": "Paris"})])
+        self.assertTrue(ok)
+
+    def test_irrelevance_pass_when_no_call(self):
+        ok, _ = ev.score_tool_case({"expect": []}, [])
+        self.assertTrue(ok)
+
+    def test_irrelevance_fail_on_spurious_call(self):
+        ok, _ = ev.score_tool_case({"expect": []}, [("get_weather", {"city": "Rome"})])
+        self.assertFalse(ok)
+
+    def test_missing_required_arg(self):
+        case = {"expect": [("search_flights", {"origin": "SFO", "dest": "JFK", "date": "2025-06-01"})]}
+        ok, _ = ev.score_tool_case(case, [("search_flights", {"origin": "SFO", "dest": "JFK"})])
+        self.assertFalse(ok)
+
+
 class TestSpeedRates(unittest.TestCase):
     """speed.rates must prefer llama.cpp native timings, fall back to wall-clock for vLLM."""
 
