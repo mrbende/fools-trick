@@ -97,7 +97,7 @@ bench-sheets: ## export latest run to Google Sheets (needs GOOGLE_APPLICATION_CR
 	@stamp=$$(ls -t /tmp/fools-trick/bench/report-*.md 2>/dev/null | head -1 | sed 's/.*report-//;s/.md//'); \
 	if [ -z "$$stamp" ]; then echo "no run found"; exit 1; fi; \
 	.bench-venv/bin/python bench/export_xlsx.py --dir /tmp/fools-trick/bench --stamp $$stamp; \
-	.bench-venv/bin/python bench/export_sheets.py --dir /tmp/fools-trick/bench --stamp $$stamp --share-with $${BENCH_SHARE_WITH:-reedbndr@gmail.com}
+	.bench-venv/bin/python bench/export_sheets.py --dir /tmp/fools-trick/bench --stamp $$stamp $${BENCH_SHARE_WITH:+--share-with $$BENCH_SHARE_WITH}
 
 ##@ Per-node (advanced)
 .PHONY: worker-up

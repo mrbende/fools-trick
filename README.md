@@ -1,8 +1,30 @@
-# fools-trick
+<h1 align="center">fools-trick</h1>
 
-A distributed [opencode](https://opencode.ai) coding agent that marries a heterogeneous homelab
-into one harness: a deep orchestrator, a swarm of fast workers, and a persistent memory layer,
-each running on the hardware it suits.
+<p align="center">One <a href="https://opencode.ai">opencode</a> coding agent across heterogeneous hardware: a deep orchestrator, fast concurrent workers, and a sliding-window memory layer — each on the machine that fits it.</p>
+
+<p align="center">
+  <img src="https://img.shields.io/badge/opencode-harness-8ad7eb?style=for-the-badge&logoColor=D9E0EE&labelColor=1E1E2E" alt="opencode harness">
+  <img src="https://img.shields.io/badge/DGX_Spark-orchestrator-76B900?style=for-the-badge&logo=nvidia&logoColor=white&labelColor=1E1E2E" alt="DGX Spark">
+  <img src="https://img.shields.io/badge/2x_3080_Ti-workers-86dbce?style=for-the-badge&logo=nvidia&logoColor=white&labelColor=1E1E2E" alt="2x RTX 3080 Ti">
+  <img src="https://img.shields.io/badge/license-MIT-a6e3a1?style=for-the-badge&logo=gnu&logoColor=D9E0EE&labelColor=1E1E2E" alt="License">
+</p>
+
+<p align="center"><em>An <a href="https://attuneintelligence.com/lab">Attune Intelligence</a> lab project — private hardware, open methods.</em></p>
+
+---
+
+> [!NOTE]
+> This is an **open-methods contribution, not an application.** It is deliberately overfit to one
+> specific set of machines (`fool`, `magus`, a NAS) and their exact quirks — GPU split, VRAM
+> budget, hostnames, paths. It will not run turnkey on your box. It is offered as a set of
+> *patterns that worked*: how to compose an opencode harness across mismatched hardware, and how
+> far a single heterogeneous rig can go once you stop renting someone else's cluster. Fork it,
+> read it, take the parts that map to your constraints.
+
+## What this is
+
+A distributed opencode coding agent that marries a heterogeneous homelab into one harness. Three
+roles, each pinned to the machine whose bottleneck it fits:
 
 - **Orchestrator** — DeepSeek-V4-Flash-0731 (EXL3, abliterated) on **fool**, a single NVIDIA DGX
   Spark, at `http://fool:8888/v1` with a **384k-token** window. One deep, capable, single stream.
@@ -11,13 +33,19 @@ each running on the hardware it suits.
   `http://127.0.0.1:8898/v1`. Fast, concurrent (4 slots), 32k context each. These are the
   `explore`, `general`, and `reviewer` subagents the orchestrator fans out in parallel.
 - **Memory** — Redis (hot, shared, ephemeral) + SQLite (durable, FTS5) on **magus**, so a session
-  slides a live window over millions of tokens instead of being lobotomized by compaction.
+  slides a live window over a persistent store instead of summarizing-and-dropping at compaction.
 
 The design principle: match each part of the harness to the resource it needs. The GPUs are
 memory-bound (small, fast, concurrent workers); the Spark is bandwidth-bound (one deep slow
-stream); the RAM + CPU sit idle (a memory store). Each runs a different part of opencode, wired
+stream); the RAM + CPU sit idle (the memory store). Each runs a different part of opencode, wired
 together over a 10G LAN. See `AGENTS.md` for the shared team contract and
 `prompts/orchestrator.md` for how the orchestrator drives the workers.
+
+## Why "fools-trick"
+
+The machines in the [lab](https://attuneintelligence.com/lab) are named for Tarot archetypes:
+**fool** is the DGX Spark, **magus** the Threadripper workstation. The orchestrator on fool sets
+up each move and the workers on magus do the visible work — hence the name.
 
 ## Quickstart
 
@@ -233,3 +261,29 @@ git submodule update --remote spark   # pull upstream/fork changes into spark/
 git add spark && git commit -m "bump spark serving recipe"
 make fool-sync                          # sync fool's clone to the newly pinned commit
 ```
+
+## The larger goal
+
+The point isn't this exact wiring, it's the approach. A frontier coding agent usually means a
+monthly bill or a uniform GPU stack. A mismatched pile of hardware — one deep-but-slow box, a
+couple of fast-but-small GPUs, idle RAM — is a more common shape, and it's usually written off
+because it isn't a cluster. This repo is a worked example that it doesn't have to be: give each
+machine the part of the harness that fits its bottleneck and the whole thing runs an agent good
+enough to code with daily, at no per-token cost. The patterns are what's worth taking; the
+hostnames are mine.
+
+## Credits
+
+An [Attune Intelligence](https://attuneintelligence.com) lab project — a solo research lab and
+engineering consultancy in Dallas, TX, built on privately-owned hardware to see how far open
+models on your own metal can go. More on the rig and the mesh it lives in:
+[the Lab](https://attuneintelligence.com/lab) ·
+[Building the Lab](https://reedbender.com/writing/building-the-lab/part-1-why-i-run-my-own-infrastructure/).
+
+Stands on [opencode](https://opencode.ai), the DGX Spark serving recipe
+([DeepSeek-v4-Flash-One-DGX-Spark](https://github.com/mrbende/DeepSeek-v4-Flash-One-DGX-Spark)),
+`llama.cpp`, and the abliterated open weights of DeepSeek-V4-Flash and Qwen3.8-27B.
+
+## License
+
+MIT. See [`LICENSE`](./LICENSE).

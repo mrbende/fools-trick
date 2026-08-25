@@ -2,20 +2,33 @@
 # fools-trick shared configuration. Sourced by every script and the Makefile.
 # Single source of truth for hosts, ports, paths, and the active worker model.
 # Everything here is overridable from the environment.
+#
+# SITE-SPECIFIC values (your hostnames, LAN address, NAS path) live in an untracked
+# config.local.sh, sourced FIRST so its exports win the ${VAR:-default} fallbacks below. Copy
+# config.local.sh.example -> config.local.sh and set your machines. The defaults here are generic
+# placeholders; the repo ships nobody's real topology.
+HERE_CFG="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+[ -f "$HERE_CFG/config.local.sh" ] && source "$HERE_CFG/config.local.sh"
 
 # --- topology ---
-FOOL_HOST="${FOOL_HOST:-fool}"                 # DGX Spark orchestrator (resolves via /etc/hosts to 192.168.1.11)
+# FOOL_HOST / WORKER host resolve via your /etc/hosts (or DNS) to the LAN address, over a wired
+# LAN, never a VPN/overlay. Set the real values in config.local.sh.
+FOOL_HOST="${FOOL_HOST:-orchestrator}"         # the deep-context orchestrator node (a DGX Spark here)
 FOOL_PORT="${FOOL_PORT:-8888}"                 # DeepSeek-V4-Flash OpenAI endpoint
 FOOL_MODEL_ID="${FOOL_MODEL_ID:-deepseek-v4-flash-0731}"
 FOOL_URL="${FOOL_URL:-http://${FOOL_HOST}:${FOOL_PORT}}"
 
-WORKER_PORT="${WORKER_PORT:-8898}"             # local Qwen worker endpoint on magus
+WORKER_PORT="${WORKER_PORT:-8898}"             # local Qwen worker endpoint (on the GPU workstation)
 WORKER_MODEL_ID="${WORKER_MODEL_ID:-qwen3.8-27b-obliterated}"
 WORKER_URL="${WORKER_URL:-http://127.0.0.1:${WORKER_PORT}}"
 WORKER_UNIT="${WORKER_UNIT:-fools-worker}"     # systemd --user transient unit name (journald)
+# The wired-LAN subnet prefix used to CONFIRM the orchestrator link is the fast LAN, not a VPN
+# overlay (preflight warns if the SSH connection to it comes from a different network). Set to
+# your LAN in config.local.sh, e.g. 192.168.1.
+LAN_PREFIX="${LAN_PREFIX:-10.0.0.}"
 
 # --- weight storage: NAS canonical, local fast-copy for serving ---
-NAS_MODELS="${NAS_MODELS:-/mnt/empress/models}"                       # persistent, shared over 10G NFS
+NAS_MODELS="${NAS_MODELS:-/mnt/nas/models}"                           # persistent, shared over the LAN
 NAS_WORKER_DIR="${NAS_WORKER_DIR:-${NAS_MODELS}/Qwen3.8-27B-OBLITERATED}"
 LOCAL_MODELS="${LOCAL_MODELS:-$HOME/Models}"                          # fast NVMe serving cache
 LOCAL_WORKER_DIR="${LOCAL_WORKER_DIR:-${LOCAL_MODELS}/qwen3.8-27b-obliterated}"
@@ -144,5 +157,6 @@ OPENCODE_PROJECT_DIR="${OPENCODE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}
 # --- benchmark reporting ---
 # Every run writes an .xlsx scorecard to the bench dir (on-disk, no cloud needed). If a Google
 # service-account key is present (GOOGLE_APPLICATION_CREDENTIALS) and BENCH_SHEETS=1, it also
-# creates a Google Sheet shared to this address.
-BENCH_SHARE_WITH="${BENCH_SHARE_WITH:-reedbndr@gmail.com}"
+# creates a Google Sheet and shares it to BENCH_SHARE_WITH (set it to your email; empty = the
+# sheet stays in the service account's own Drive, unshared).
+BENCH_SHARE_WITH="${BENCH_SHARE_WITH:-}"

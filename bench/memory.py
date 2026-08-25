@@ -311,6 +311,7 @@ def main():
     r.add_argument("--seed", type=int, default=42)
     r.add_argument("--judge-url", required=True, help="orchestrator base WITHOUT /v1")
     r.add_argument("--judge-model", required=True)
+    r.add_argument("--logfile", help="append harness logs here (matches other bench modules)")
     d = sub.add_parser("diff", help="paired delta of two arms")
     d.add_argument("--a", default="on")
     d.add_argument("--b", default="off")
@@ -319,7 +320,7 @@ def main():
     if a.cmd == "diff":
         diff(a.a, a.b)
     elif a.cmd == "run":
-        ui.setup_logging(None)
+        ui.setup_logging(a.logfile)
         run_arm(a)
     else:
         ap.print_help()

@@ -42,7 +42,7 @@ if ssh_fool "[ -d '$FOOL_HF_CACHE' ]" 2>/dev/null; then
   say "step 2/3: archive raw hf-hub -> NAS ($NAS_DEEPSEEK_ARCHIVE)"
   if confirm "archive the raw 107 GB hf-hub to NAS and free it from fool local?"; then
     ssh_fool "[ -d '$NAS_DEEPSEEK_ARCHIVE' ] || mkdir -p '$NAS_DEEPSEEK_ARCHIVE'" \
-      || die "cannot create NAS archive dir $NAS_DEEPSEEK_ARCHIVE (is empress mounted on $FOOL_HOST?)"
+      || die "cannot create NAS archive dir $NAS_DEEPSEEK_ARCHIVE (is the NAS mounted on $FOOL_HOST?)"
     # NFS export rejects chown/chgrp/chmod, so drop owner/group/perm preservation
     # (-a would include -pgo and spam "Operation not permitted"). -rltD keeps content,
     # symlinks, and mtimes -- all that matters for a weight archive.

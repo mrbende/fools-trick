@@ -24,3 +24,19 @@ report-*.md
 # benchmark artifacts
 scorecard-*.xlsx
 manifest-*.json
+
+# site-specific overrides (your hostnames/LAN/paths) -- never commit; ship the .example instead
+scripts/config.local.sh
+
+# credentials / secrets (never commit)
+*.env
+.env
+*-service-account*.json
+*credentials*.json
+gcp-*.json
+
+# durable memory store db (lives in ~/.local/share by default; ignore any stray in-tree copy).
+# NOTE: only the .db files -- NOT the plugin source in .opencode/memory/*.js
+*.db
+*.db-wal
+*.db-shm

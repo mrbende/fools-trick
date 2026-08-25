@@ -6,7 +6,7 @@
 import { tool } from "@opencode-ai/plugin"
 
 const BASE = process.env.CAMOFOX_URL || "http://localhost:9377"
-const SERVER_DIR = "/home/reed/Source/camofox-browser"
+const SERVER_DIR = process.env.CAMOFOX_DIR || `${process.env.HOME}/Source/camofox-browser`
 const UA = { userId: "fools-trick", sessionKey: "orchestrator" }
 
 async function alive() {

@@ -256,7 +256,7 @@ case "${1:-all}" in
   # is guarded with `|| warn` so a single step's failure (infra hiccup, non-zero exit) can never
   # abort the run before finish() writes the report/xlsx -- a benchmark must always produce its
   # scorecard from whatever completed.
-  all)        STEP_TOTAL=12; preflight
+  all)        STEP_TOTAL=15; preflight
               speed_worker      || warn "speed[worker] step errored"
               speed_fool        || warn "speed[fool] step errored"
               capability_worker || warn "capability[worker] step errored"
@@ -265,6 +265,7 @@ case "${1:-all}" in
               safety_worker     || warn "safety step errored"
               e2e_run           || warn "e2e step errored"
               longctx_fool      || warn "longctx step errored"
+              memory_ab         || warn "memory A/B step errored"
               finish ;;
-  *) die "usage: bench.sh {all|quick|capability|code|safety|longctx|speed|e2e}   (SIZE=smoke|small|large|max)" ;;
+  *) die "usage: bench.sh {all|quick|capability|code|safety|longctx|speed|e2e|memory}   (SIZE=smoke|small|large|max)" ;;
 esac

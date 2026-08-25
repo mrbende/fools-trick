@@ -41,9 +41,14 @@ echo
 # --- fool reachability + code sync ---
 if fool_reachable; then
   ok "$FOOL_HOST reachable on LAN"
-  # confirm we are on the LAN path, not Tailscale
+  # confirm we are on the wired-LAN path, not a VPN overlay (Tailscale etc). LAN_PREFIX is set in
+  # config.local.sh to your subnet.
   conn="$(ssh_fool 'echo $SSH_CONNECTION' 2>/dev/null | awk '{print $3}')"
-  case "$conn" in 192.168.1.*) ok "fool via LAN ($conn)";; "" ) warn "could not confirm fool connection path";; *) warn "fool NOT on 192.168.1.x (got $conn) -- check /etc/hosts, avoid Tailscale";; esac
+  case "$conn" in
+    "$LAN_PREFIX"*) ok "$FOOL_HOST via LAN ($conn)";;
+    "")             warn "could not confirm $FOOL_HOST connection path";;
+    *)              warn "$FOOL_HOST NOT on ${LAN_PREFIX}x (got $conn) -- check /etc/hosts, avoid VPN overlays";;
+  esac
   if ssh_fool "[ -d '$FOOL_SPARK_DIR/.git' ]" 2>/dev/null; then
     fool_spark_synced || warn "fool spark clone not clean/synced (make fool-sync)"
   else

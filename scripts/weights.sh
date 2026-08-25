@@ -11,7 +11,7 @@
 #   - the orchestrator (DeepSeek) weights state and its context, on fool
 # so you can see at a glance what is available, what is set, and on which machine.
 #
-# The NAS (/mnt/empress/models) is the source of truth, shared over 10G NFS by both machines.
+# The NAS ($NAS_MODELS) is the source of truth, shared over the LAN by both machines.
 # We serve from a local copy because mmap over NFS has latency spikes that hurt cold load and
 # can stall mid-serve; the local copy is a disposable cache. ALL weights -- every quant, for
 # serving or A/B -- go through this NAS-canonical -> local flow. Never dump a GGUF straight to
@@ -29,7 +29,7 @@ fetch_to_nas() {
   # download the given quant file into NAS_WORKER_DIR if absent
   local file="$1" dest="$NAS_WORKER_DIR/$1"
   if [ -f "$dest" ]; then ok "on NAS: $dest"; return 0; fi
-  nas_mounted || die "NAS not mounted at $NAS_MODELS (autofs: 'ls $NAS_MODELS' to trigger, check empress)"
+  nas_mounted || die "NAS not mounted at $NAS_MODELS (autofs: 'ls $NAS_MODELS' to trigger; check the NAS)"
   check_free_local "$NAS_MODELS" "$NAS_MIN_FREE_GIB" || confirm "NAS space is low; download anyway?" || die "aborted"
   mkdir -p "$NAS_WORKER_DIR"
   say "downloading $file from $WORKER_REPO -> NAS"

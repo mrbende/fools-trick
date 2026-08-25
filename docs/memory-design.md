@@ -100,7 +100,7 @@ the system runnable; none is a stopgap meant to be thrown away.
 
 - `MEMORY_ENABLED` (default 1)
 - `REDIS_URL` (default redis://127.0.0.1:6379)
-- `MEMORY_DB` (default /home/reed/.local/share/fools-trick/memory.db -- durable,
+- `MEMORY_DB` (default ~/.local/share/fools-trick/memory.db -- durable,
   NOT /tmp; survives reboot)
 - `WINDOW_INPUT_TOKENS` (default 160000) -- the sliding input cap
 - `DECODE_HEADROOM` (default 32000) -- reserved output budget; invariant

@@ -37,7 +37,7 @@ now carries only machine-wide preferences; providers live in the projects that u
 | `fool-ds4` | `http://fool:8888/v1` | `deepseek-v4-flash-0731` (abliterated, EXL3) | 384000 | orchestrator (deep, slow) |
 | `magus` | `http://127.0.0.1:8898/v1` | `qwen3.8-27b-obliterated` (i1-Q4_K_S) | 32768/slot, 131072 total | workers (fast, concurrent) |
 
-`fool` resolves via `/etc/hosts` to the LAN address (192.168.1.11), NEVER Tailscale. The
+`fool` resolves via `/etc/hosts` to its wired-LAN address, NEVER a VPN overlay. The
 worker is local on magus. Both `apiKey` are `dummy` (local servers, no auth). Both provider
 timeouts are `false` (unbounded) -- a slow worker doing substantial work must not be
 cancelled mid-generation; runaway workers are bounded by each subagent's `steps` cap, not
