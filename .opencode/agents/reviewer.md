@@ -1,5 +1,5 @@
 ---
-description: Read-only review of a diff or file for bugs, edge cases, and style violations. The orchestrator's cheap gate before accepting worker changes. Cannot edit. Runs on magus Qwen3.8-27B.
+description: Read-only review of a diff or file for bugs, edge cases, and style violations. The orchestrator's cheap gate before accepting worker changes. Cannot edit. Runs on magus Qwen3.8-27B-OBLITERATED.
 mode: subagent
 model: magus/qwen3.8-27b-obliterated
 temperature: 0.1

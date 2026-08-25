@@ -50,7 +50,7 @@ copy_to_local() {
   fi
   mkdir -p "$LOCAL_WORKER_DIR"
   say "fast-copy $WORKER_FILE : NAS -> local NVMe"
-  rsync -a --info=progress2 "$src" "$dst"
+  rsync -rltD --info=progress2 "$src" "$dst"
   ok "local ready: $dst"
 }
 

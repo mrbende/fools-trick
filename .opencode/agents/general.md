@@ -1,5 +1,5 @@
 ---
-description: Multi-step work that may touch several files and needs some judgment, but is still self-contained. Heavier than implementer; use when a unit is not cleanly atomic. Full tool access. Runs on magus Qwen3.8-27B.
+description: Multi-step work that may touch several files and needs some judgment, but is still self-contained. Heavier than implementer; use when a unit is not cleanly atomic. Full tool access. Runs on magus Qwen3.8-27B-OBLITERATED.
 mode: subagent
 model: magus/qwen3.8-27b-obliterated
 temperature: 0.3
@@ -33,8 +33,10 @@ How to work:
 - Keep the change coherent: match existing style and structure, prefer existing dependencies, and
   keep scope to what the task defines. Do not add speculative abstractions or compatibility layers.
 - Work in the smallest steps that keep the code working; do not leave it half-broken between steps.
-- If partway through you discover the task is underspecified, contradictory, or much larger than
-  described, stop and report that rather than guessing at intent.
+- A well-formed task gives you GOAL, INPUTS (files/facts), OUTPUT (definition of done), and
+  BOUNDARIES (what not to touch). If any is missing, or you discover the task is contradictory or
+  much larger than described, stop and report exactly what is missing rather than guessing at
+  intent. You have none of the orchestrator's context; a guess is worse than asking.
 - No emojis in code, comments, or logs.
 
 If you produce a large output (a long report, a generated document, bulk analysis) and the task

@@ -8,7 +8,7 @@
 # A subagent worker does agentic tool-calling across 2x RTX 3080 Ti, so the choices are:
 #   -sm layer            : ONLY split mode that loads this hybrid-recurrent arch on 2 GPUs
 #                          (row/tensor split cannot partition the SSM state tensors)
-#   -ts 9,12             : VRAM-proportional split; biases layers off GPU0 (desktop ~2GB)
+#   -ts 10,12            : VRAM-proportional split; biases layers off GPU0 (desktop ~2GB)
 #   -ctk/-ctv q8_0       : tool-safe KV, MATCHED (mixed K/V types cause silent prefill collapse)
 #   -fa on               : mandatory with quantized KV (context creation fails otherwise)
 #   --parallel 4         : cheap here -- hybrid arch keeps KV small (~16 of 65 blocks)
@@ -26,14 +26,7 @@ source "$HERE/../scripts/lib.sh"
 MODEL_PATH="${WORKER_MODEL_PATH:-$LOCAL_WORKER_DIR/$WORKER_FILE}"
 CTX=$(( WORKER_PARALLEL * WORKER_CTX_PER_SLOT ))
 
-FOREGROUND=0
-for arg in "$@"; do
-  case "$arg" in
-    --foreground) FOREGROUND=1 ;;
-    -h|--help) echo "usage: worker/serve.sh [--foreground]"; exit 0 ;;
-    *) die "unknown arg: $arg" ;;
-  esac
-done
+[ "${1:-}" = "-h" ] || [ "${1:-}" = "--help" ] && { echo "usage: worker/serve.sh   (foreground; run via systemd-run from up.sh)"; exit 0; }
 
 # Ensure a local fast-copy exists (provisions from NAS, or downloads to NAS then copies).
 if [ ! -f "$MODEL_PATH" ]; then
@@ -64,6 +57,7 @@ args=(
   --no-context-shift
   --jinja
   --reasoning-format deepseek
+  --reasoning-preserve
   --chat-template-kwargs "{\"reasoning_effort\":\"${WORKER_REASONING}\"}"
   --temp "$WORKER_TEMP" --top-p "$WORKER_TOP_P" --top-k "$WORKER_TOP_K"
   --no-mmproj
@@ -72,12 +66,7 @@ args=(
 
 say "worker: $WORKER_FILE  sm=$WORKER_SPLIT_MODE ts=$WORKER_TENSOR_SPLIT  slots=$WORKER_PARALLEL x ${WORKER_CTX_PER_SLOT}ctx  kv=$WORKER_KV  -> 0.0.0.0:$WORKER_PORT"
 
-if [ "$FOREGROUND" = 1 ]; then
-  exec "$LLAMA_SERVER" "${args[@]}"
-else
-  mkdir -p "$HERE/logs"
-  logfile="$HERE/logs/worker.log"
-  setsid nohup "$LLAMA_SERVER" "${args[@]}" > "$logfile" 2>&1 &
-  ok "started in background, pid $!, log: $logfile"
-  dim "readiness: make worker-health"
-fi
+# Foreground exec. Backgrounding, logging, and lifecycle are systemd's job:
+# up.sh launches this via `systemd-run --user --unit fools-worker`, so stdout/stderr
+# go straight to journald (timestamps, rotation, persistence, `journalctl --user`).
+exec "$LLAMA_SERVER" "${args[@]}"

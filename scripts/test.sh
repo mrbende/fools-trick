@@ -1,56 +1,87 @@
 #!/usr/bin/env bash
-# Tests: config integrity + agent resolution + (when live) a subagent round-trip.
-# The config/wiring checks run without any server; the round-trip needs both up.
+# Test runner. Three layers:
+#   1. unit    -- python bench parsers + shell lib helpers (no network, always runnable)
+#   2. config  -- opencode config parses, all agents resolve to the right nodes
+#   3. live    -- real subagent round-trip through opencode (only if servers are up)
+#
+#   ./scripts/test.sh          # all layers
+#   ./scripts/test.sh unit     # just the fast offline units
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+ROOT="$(cd "$HERE/.." && pwd)"
 source "$HERE/config.sh"
 source "$HERE/lib.sh"
 
 fail=0
 
-say "config + wiring"
-opencode debug config >/dev/null 2>&1 && ok "opencode config parses" || { err "config parse failed"; fail=1; }
-
-# every agent must resolve to a model, and workers must point at magus
-agents_json="$(opencode debug config 2>/dev/null)"
-if [ -n "$agents_json" ]; then
-  printf '%s' "$agents_json" | python3 - <<'PY' || fail=1
-import sys,json
-d=json.load(sys.stdin); ag=d.get("agent",{})
-need_primary={"build","plan"}; need_sub={"explore","scout","general","implementer","reviewer"}
-bad=0
-for n in need_primary|need_sub:
-    a=ag.get(n)
-    if not a: print(f"MISSING agent {n}"); bad=1; continue
-    m=a.get("model","")
-    if n in need_sub and not m.startswith("magus/"): print(f"worker {n} not on magus: {m}"); bad=1
-    if n in need_primary and not m.startswith("fool-ds4/"): print(f"primary {n} not on fool: {m}"); bad=1
-sm=d.get("small_model","")
-if not sm.startswith("magus/"): print(f"small_model not on magus: {sm}"); bad=1
-sys.exit(bad)
-PY
-  [ $? -eq 0 ] && ok "agents resolve (primaries->fool, workers->magus, small_model->magus)"
-else
-  err "could not read config"; fail=1
-fi
-
-# prompt files referenced exist
-[ -f "$OPENCODE_PROJECT_DIR/prompts/orchestrator.md" ] && ok "orchestrator prompt present" || { err "orchestrator prompt missing"; fail=1; }
-[ -f "$OPENCODE_PROJECT_DIR/AGENTS.md" ] && ok "AGENTS.md present" || { err "AGENTS.md missing"; fail=1; }
-
-echo
-say "live subagent round-trip (needs worker up)"
-if http_ok "$WORKER_URL/v1/models"; then
-  if out="$(cd "$OPENCODE_PROJECT_DIR" && timeout "${TEST_TIMEOUT:-300}" opencode run "@explore what files are in the repo root? answer in one line." 2>/dev/null)"; then
-    [ -n "$out" ] && ok "explore worker answered via opencode" || warn "explore returned empty"
+unit_tests() {
+  say "unit: python bench parsers"
+  local py="$ROOT/.bench-venv/bin/python"; [ -x "$py" ] || py="python3"
+  if "$py" -m unittest discover -s "$ROOT/tests" -p "test_*.py" 2>&1 | tail -15; then
+    ok "python unit tests passed"
   else
-    warn "subagent round-trip did not complete"
+    err "python unit tests FAILED"; fail=1
   fi
-else
-  dim "worker not up; skipping round-trip (make worker-up to enable)"
-fi
+  echo
+  say "unit: shell lib helpers"
+  if bash "$ROOT/tests/test_lib.sh"; then ok "shell unit tests passed"; else err "shell unit tests FAILED"; fail=1; fi
+}
+
+config_tests() {
+  echo; say "config: opencode wiring"
+  local cfg
+  cfg="$(opencode debug config 2>/dev/null)"
+  if [ -z "$cfg" ] || ! printf '%s' "$cfg" | python3 -c "import sys,json;json.load(sys.stdin)" 2>/dev/null; then
+    err "opencode config does not parse"; fail=1; return
+  fi
+  ok "opencode config parses"
+  # Note: pass the checker via -c so the piped config stays on stdin (a heredoc would
+  # itself become stdin and shadow the pipe).
+  local checker='
+import sys, json
+d = json.load(sys.stdin); ag = d.get("agent", {})
+prim = {"build", "plan"}; sub = {"explore", "scout", "general", "implementer", "reviewer"}
+bad = 0
+for n in prim | sub:
+    a = ag.get(n)
+    if not a: print(f"MISSING agent {n}"); bad = 1; continue
+    m = a.get("model", "")
+    if n in sub and not m.startswith("magus/"): print(f"worker {n} not on magus: {m}"); bad = 1
+    if n in prim and not m.startswith("fool-ds4/"): print(f"primary {n} not on fool: {m}"); bad = 1
+if not d.get("small_model", "").startswith("magus/"): print("small_model not on magus"); bad = 1
+sys.exit(bad)
+'
+  if printf '%s' "$cfg" | python3 -c "$checker"; then
+    ok "agents resolve (primaries->fool, workers->magus, small_model->magus)"
+  else err "agent routing wrong"; fail=1; fi
+  for f in prompts/orchestrator.md AGENTS.md .opencode/agents/explore.md; do
+    [ -f "$ROOT/$f" ] && ok "present: $f" || { err "missing: $f"; fail=1; }
+  done
+}
+
+live_tests() {
+  echo; say "live: subagent round-trip (needs worker up)"
+  if ! http_ok "$WORKER_URL/v1/models"; then
+    dim "worker not serving; skipping live test (make worker-up to enable)"
+    return
+  fi
+  # direct completion on the worker proves the endpoint + reasoning split
+  local out
+  out="$(curl -fsS --max-time 60 "$WORKER_URL/v1/chat/completions" -H 'Content-Type: application/json' \
+    -d "{\"model\":\"$WORKER_MODEL_ID\",\"messages\":[{\"role\":\"user\",\"content\":\"reply exactly: pong\"}],\"max_tokens\":100,\"temperature\":0}" 2>/dev/null \
+    | python3 -c 'import sys,json;m=json.load(sys.stdin)["choices"][0]["message"];print((m.get("content") or m.get("reasoning_content") or "").strip())' 2>/dev/null)"
+  printf '%s' "$out" | grep -qi pong && ok "worker completion works (said: ${out:0:30})" || { err "worker completion failed"; fail=1; }
+}
+
+case "${1:-all}" in
+  unit)   unit_tests ;;
+  config) config_tests ;;
+  live)   live_tests ;;
+  all)    unit_tests; config_tests; live_tests ;;
+  *) die "usage: test.sh {unit|config|live|all}" ;;
+esac
 
 echo
-[ "$fail" -ne 0 ] && { err "tests FAILED"; exit 1; }
-ok "tests passed"
+[ "$fail" -ne 0 ] && { err "TESTS FAILED"; exit 1; }
+ok "all tests passed"

@@ -92,4 +92,6 @@ fool_spark_synced() {
 }
 
 # --- local worker process ---
-worker_pid() { pgrep -x llama-server 2>/dev/null | head -1; }
+# Worker runs as a systemd --user transient unit; journald owns its log/lifecycle.
+worker_active() { systemctl --user is-active --quiet "$WORKER_UNIT" 2>/dev/null; }
+worker_state()  { systemctl --user is-active "$WORKER_UNIT" 2>/dev/null || echo inactive; }

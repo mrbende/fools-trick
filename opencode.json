@@ -7,7 +7,7 @@
   "provider": {
     "fool-ds4": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "fool (DeepSeek-V4-Flash, abliterated)",
+      "name": "fool",
       "options": {
         "baseURL": "http://fool:8888/v1",
         "apiKey": "dummy",
@@ -15,7 +15,7 @@
       },
       "models": {
         "deepseek-v4-flash-0731": {
-          "name": "DeepSeek-V4-Flash-0731 EXL3-3.0bpw (fool, DGX Spark, ABLATE)",
+          "name": "DeepSeek-V4-Flash-0731, abliterated",
           "tool_call": true,
           "reasoning": true,
           "limit": {
@@ -27,7 +27,7 @@
     },
     "magus": {
       "npm": "@ai-sdk/openai-compatible",
-      "name": "magus (Qwen3.8-27B-OBLITERATED, 2x3080Ti)",
+      "name": "magus (2x3080Ti)",
       "options": {
         "baseURL": "http://127.0.0.1:8898/v1",
         "apiKey": "dummy",
@@ -35,12 +35,12 @@
       },
       "models": {
         "qwen3.8-27b-obliterated": {
-          "name": "Qwen3.8-27B-OBLITERATED Q4_K_M (magus, agentic worker)",
+          "name": "Qwen3.8-27B-OBLITERATED Q4_K_M",
           "tool_call": true,
           "attachment": true,
           "reasoning": true,
           "limit": {
-            "context": 32768,
+            "context": 24576,
             "output": 32768
           }
         }
@@ -57,13 +57,37 @@
       "temperature": 0.3,
       "permission": {
         "edit": "allow",
-        "bash": "allow",
         "webfetch": "allow",
         "external_directory": {
           "/tmp/fools-trick/scratch/**": "allow"
         },
         "task": {
           "*": "allow"
+        },
+        "bash": {
+          "*": "allow",
+          "git push*": "ask",
+          "git reset --hard*": "ask",
+          "git rebase -i*": "ask",
+          "git rebase --interactive*": "ask",
+          "git filter-branch*": "ask",
+          "git filter-repo*": "ask",
+          "terraform apply*": "ask",
+          "terraform destroy*": "ask",
+          "kubectl apply*": "ask",
+          "kubectl delete*": "ask",
+          "helm *": "ask",
+          "pulumi up*": "ask",
+          "pulumi destroy*": "ask",
+          "npm publish*": "ask",
+          "pnpm publish*": "ask",
+          "yarn publish*": "ask",
+          "cargo publish*": "ask",
+          "poetry publish*": "ask",
+          "twine upload*": "ask",
+          "docker push*": "ask",
+          "gh release create*": "ask",
+          "gh pr merge*": "ask"
         }
       }
     },

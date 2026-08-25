@@ -14,11 +14,16 @@ if fool_reachable; then
     warn "reachable but not serving on :$FOOL_PORT"
   fi
   if ssh_fool "[ -d '$FOOL_SPARK_DIR/.git' ]" 2>/dev/null; then
-    have="$(ssh_fool "git -C '$FOOL_SPARK_DIR' rev-parse --short HEAD" 2>/dev/null || echo '?')"
+    have="$(ssh_fool "git -C '$FOOL_SPARK_DIR' rev-parse HEAD" 2>/dev/null || echo '?')"
     dirty="$(ssh_fool "git -C '$FOOL_SPARK_DIR' status --porcelain 2>/dev/null | wc -l" || echo '?')"
-    want="$(spark_pinned_sha)"; dim "  clone @ $have (pin ${want:0:7}), ${dirty} dirty file(s)"
+    want="$(spark_pinned_sha)"
+    if [ "$have" = "$want" ] && [ "${dirty:-1}" -eq 0 ]; then
+      ok "spark clone synced @ ${want:0:12} (clean)"
+    else
+      warn "spark clone DRIFT: fool @ ${have:0:12}, pin ${want:0:12}, ${dirty} dirty -- run: make fool-sync"
+    fi
   else
-    dim "  no spark clone on fool (make bootstrap)"
+    warn "no spark clone on fool (make bootstrap)"
   fi
 else
   warn "not reachable"
@@ -26,13 +31,12 @@ fi
 
 echo
 say "worker (magus / Qwen3.8-27B-OBLITERATED)"
-pid="$(worker_pid || true)"
 if http_ok "$WORKER_URL/v1/models"; then
-  ok "up @ $WORKER_URL  models=[$(models_id "$WORKER_URL")]  pid=${pid:-?}"
-elif [ -n "$pid" ]; then
-  warn "llama-server running (pid $pid) but not answering on :$WORKER_PORT"
+  ok "up @ $WORKER_URL  models=[$(models_id "$WORKER_URL")]  unit=$(worker_state)"
+elif worker_active; then
+  warn "unit $WORKER_UNIT active but not answering on :$WORKER_PORT (still loading?)"
 else
-  warn "not running"
+  warn "not running (unit: $(worker_state))"
 fi
 
 echo

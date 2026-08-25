@@ -10,16 +10,24 @@ source "$HERE/lib.sh"
 
 up_worker() {
   say "starting worker on magus"
-  if port_in_use "$WORKER_PORT"; then
-    local pid; pid="$(worker_pid || true)"
-    if http_ok "$WORKER_URL/v1/models"; then
-      ok "worker already up and healthy on :$WORKER_PORT"; return 0
-    fi
-    warn "port $WORKER_PORT in use (llama-server pid ${pid:-unknown}) but not healthy"
-    confirm "kill existing worker and restart?" || die "aborted"
+  if http_ok "$WORKER_URL/v1/models"; then
+    ok "worker already up and healthy on :$WORKER_PORT"; return 0
+  fi
+  if port_in_use "$WORKER_PORT" || worker_active; then
+    warn ":$WORKER_PORT busy or fools-worker unit present but not healthy"
+    confirm "restart the worker?" || die "aborted"
     "$HERE/down.sh" worker
   fi
-  "$HERE/../worker/serve.sh"
+  # Ensure weights are present (check-first; provisions from NAS or downloads if missing).
+  if [ ! -f "$LOCAL_WORKER_DIR/$WORKER_FILE" ]; then
+    say "worker weights not local; provisioning"
+    "$HERE/weights.sh" worker
+  fi
+  # Launch as a transient systemd user service: journald handles logging + lifecycle,
+  # args come from serve.sh (config-driven), no unit file to maintain.
+  systemd-run --user --unit "$WORKER_UNIT" --description "fools-trick worker (Qwen)" \
+    --collect "$HERE/../worker/serve.sh" \
+    || die "systemd-run failed to start $WORKER_UNIT"
   wait_health "$WORKER_URL" 300 "worker"
 }
 
@@ -43,8 +51,17 @@ up_fool() {
     ssh_fool "cd '$FOOL_SPARK_DIR' && ./start.sh stop" || warn "stop returned nonzero"
   fi
 
-  say "launching spark recipe on $FOOL_HOST (ABLATE=$FOOL_ABLATE); first boot is long"
-  ssh_fool "cd '$FOOL_SPARK_DIR' && ABLATE=$FOOL_ABLATE ./start.sh --no-wait" \
+  # Serve from the local coalesced data/tp1. The recipe's entrypoint skips download/coalesce
+  # when data/tp1's manifest exists, so this is fast and never touches the NAS. If the weights
+  # were never provisioned, warn -- don't trigger a surprise 107 GB download inside serve.
+  if ! ssh_fool "[ -f '$FOOL_SPARK_DIR/data/tp1/rank-sliced-tp1-manifest.json' ]" 2>/dev/null; then
+    warn "DeepSeek weights not coalesced on $FOOL_HOST yet"
+    confirm "run 'make fool-weights' first? (recommended; otherwise serve will download ~107 GB)" \
+      && { "$HERE/fool-weights.sh"; } || dim "proceeding; first boot will download+coalesce (slow)"
+  fi
+  say "launching spark recipe on $FOOL_HOST (ABLATE=$FOOL_ABLATE, effort=$FOOL_EFFORT); serves from local data/tp1"
+  ssh_fool "cd '$FOOL_SPARK_DIR' && HF_CACHE='$FOOL_HF_CACHE' ABLATE=$FOOL_ABLATE \
+    DEFAULT_CHAT_TEMPLATE_KWARGS_EFFORT='$FOOL_EFFORT' ./start.sh --no-wait" \
     || die "spark start.sh failed on $FOOL_HOST"
   wait_health "$FOOL_URL" "${FOOL_STARTUP_WAIT:-3600}" "orchestrator"
 }

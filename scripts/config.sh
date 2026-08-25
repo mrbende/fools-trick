@@ -12,6 +12,7 @@ FOOL_URL="${FOOL_URL:-http://${FOOL_HOST}:${FOOL_PORT}}"
 WORKER_PORT="${WORKER_PORT:-8898}"             # local Qwen worker endpoint on magus
 WORKER_MODEL_ID="${WORKER_MODEL_ID:-qwen3.8-27b-obliterated}"
 WORKER_URL="${WORKER_URL:-http://127.0.0.1:${WORKER_PORT}}"
+WORKER_UNIT="${WORKER_UNIT:-fools-worker}"     # systemd --user transient unit name (journald)
 
 # --- weight storage: NAS canonical, local fast-copy for serving ---
 NAS_MODELS="${NAS_MODELS:-/mnt/empress/models}"                       # persistent, shared over 10G NFS
@@ -38,13 +39,19 @@ WORKER_FILE="${WORKER_FILE:-Qwen3.8-27B-OBLITERATED.${WORKER_QUANT}.gguf}"
 #   - Row/tensor split cannot partition the recurrent state tensors -> they FAIL to
 #     load. --split-mode layer is the ONLY working mode across 2 GPUs.
 WORKER_PARALLEL="${WORKER_PARALLEL:-4}"        # concurrent slots
-WORKER_CTX_PER_SLOT="${WORKER_CTX_PER_SLOT:-32768}"
+# 24k/slot, not 32k. Measured on this hardware: usable VRAM is ~21.9 GB (GPU0 loses
+# ~1.9 GB to the desktop), and weights 15.8 + KV(4x32k q8_0) 4.3 + per-GPU compute
+# buffers ~1.4 = ~21.5 GB left NO margin -- pipeline-parallel OOM'd every split ratio.
+# 4x24k drops KV ~1 GB, giving both compute buffers room to fit cleanly. 96k total
+# context across 4 concurrent workers is ample for subagent units.
+WORKER_CTX_PER_SLOT="${WORKER_CTX_PER_SLOT:-24576}"
 WORKER_KV="${WORKER_KV:-q8_0}"                 # tool-safe KV quant; q4_0 degrades tool calling
 WORKER_SPLIT_MODE="${WORKER_SPLIT_MODE:-layer}"  # only mode that loads the hybrid arch on 2 GPUs
-# VRAM-proportional layer split. GPU0 carries the desktop (~2GB), so bias layers to
-# GPU1 to avoid OOMing GPU0. Free VRAM ~9.8G (GPU0) vs ~11.9G (GPU1) -> ~9,12 with a
-# cushion on GPU0. Override if the desktop footprint changes.
-WORKER_TENSOR_SPLIT="${WORKER_TENSOR_SPLIT:-9,12}"
+# Layer split. GPU0 loses ~1.9 GB to the desktop, so give GPU1 slightly more of the
+# model to keep GPU0's free memory (which also holds a compute buffer) comfortable.
+# With 24k/slot KV this fits cleanly without the OOM-retry that plagued 32k. If the
+# desktop footprint grows, shift toward 9,12; if GPU1 ever OOMs, shift toward 11,10.
+WORKER_TENSOR_SPLIT="${WORKER_TENSOR_SPLIT:-10,12}"
 WORKER_REASONING="${WORKER_REASONING:-medium}"
 # Qwen3.x "precise" sampling preset; stable for tool-calling. No repeat-penalty (corrupts JSON).
 WORKER_TEMP="${WORKER_TEMP:-0.6}"
@@ -66,6 +73,22 @@ SPARK_REMOTE_URL="${SPARK_REMOTE_URL:-https://github.com/mrbende/DeepSeek-v4-Fla
 # AttuneIntelligence clone and library-inference-recipe already in ~/Recipes.
 FOOL_SPARK_DIR="${FOOL_SPARK_DIR:-$HOME/Recipes/fools-trick-spark}"
 FOOL_ABLATE="${FOOL_ABLATE:-1}"                # 1 = abliterated orchestrator
+# Reasoning effort for the orchestrator. The recipe defaults to `max`, which burns huge
+# reasoning-token budgets every turn -- wasteful for a model whose job is delegation and
+# synthesis (the workers do the deep thinking). `high` still plans good fan-outs and
+# catches conflicts during synthesis without the max token-burn. Values: max|high|low|false.
+FOOL_EFFORT="${FOOL_EFFORT:-high}"
+
+# DeepSeek EXL3 weights (~107 GB). Three tiers in the recipe; we place them so serving
+# is always local-fast and the NAS holds only a cold archive:
+#   HF_CACHE (raw TP4 download, ~107 GB)  -> fool LOCAL during bootstrap. Hardlink-coalesce
+#       into data/tp1 only works within one filesystem, so the download must be local.
+#   data/tp1 (coalesced TP1, ~99 GB, mmap'd every serve) -> fool LOCAL. The serve hot path.
+#   NAS archive -> after data/tp1 is built, the raw 107 GB hf-hub is pushed to the NAS as
+#       cold backup and deleted from fool local, so fool carries only the ~99 GB it serves.
+# make up then serves purely from local data/tp1; the NAS is never on the boot/serve path.
+FOOL_HF_CACHE="${FOOL_HF_CACHE:-${FOOL_SPARK_DIR}/hf-hub}"                 # local download cache on fool
+NAS_DEEPSEEK_ARCHIVE="${NAS_DEEPSEEK_ARCHIVE:-${NAS_MODELS}/deepseek-v4-flash-spark-hfcache}"  # cold backup
 
 # The commit fool must run: the SHA this repo's submodule pins. fool's clone must be
 # clean and at this exact commit before we start the server there. Resolved at runtime

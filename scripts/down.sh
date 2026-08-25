@@ -8,14 +8,13 @@ source "$HERE/config.sh"
 source "$HERE/lib.sh"
 
 down_worker() {
-  local pid; pid="$(worker_pid || true)"
-  if [ -z "$pid" ] && ! port_in_use "$WORKER_PORT"; then ok "worker already stopped"; return 0; fi
-  say "stopping worker (llama-server pid ${pid:-?}) on :$WORKER_PORT"
+  if ! worker_active && ! port_in_use "$WORKER_PORT"; then ok "worker already stopped"; return 0; fi
+  say "stopping worker unit ($WORKER_UNIT)"
+  systemctl --user stop "$WORKER_UNIT" 2>/dev/null || true
+  systemctl --user reset-failed "$WORKER_UNIT" 2>/dev/null || true
+  # --collect usually cleans up; belt-and-suspenders for a stray process on the port.
   pkill -x llama-server 2>/dev/null || true
-  for _ in $(seq 1 20); do worker_pid >/dev/null 2>&1 || { ok "worker stopped"; return 0; }; sleep 1; done
-  warn "worker still alive after 20s, sending SIGKILL"
-  pkill -9 -x llama-server 2>/dev/null || true
-  ok "worker killed"
+  ok "worker stopped"
 }
 
 down_fool() {
