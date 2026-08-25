@@ -14,7 +14,7 @@ reframing -- local, throughput-bound-orchestrator, worker-concurrency-as-scaling
 system's actual novel operating point. The pattern (big plans, small execute) is well-trodden;
 this operating point is not.
 
-## The four layers
+## The five layers
 
 ```
   YOU
@@ -22,12 +22,13 @@ this operating point is not.
    v
   opencode harness  ------  prompt + orchestration strategy (prompts/, AGENTS.md, .opencode/)
    |                        the build agent = DeepSeek orchestrator, delegating via the Task tool
+   |                        + memory: sliding window over Redis(hot)+SQLite(durable), not compaction
    v
   fool: DeepSeek-V4-Flash   deep, slow, single stream, 384k ctx, abliterated (runtime projection)
    |    (orchestrator)      plans / decomposes / dispatches / synthesizes
    v  (LAN, 10G, never Tailscale)
-  magus: Qwen3.8-27B x4     fast, concurrent, 32k ctx/slot (131k total), abliterated (OBLITERATED)
-        (workers)           execute self-contained units: search, edit, review, research
+  magus: Qwen3.8-27B x3     fast, concurrent, 32k ctx/slot (131k total), abliterated (OBLITERATED)
+        (workers)           execute self-contained units: search, edit, review
 ```
 
 Each layer, from first principles:
@@ -84,16 +85,17 @@ theory-of-mind, open on questions of mind (functional, non-asserting) -- with th
 guardrail that consciousness-*steering* (not the disposition) degrades ToM, so we use ablation
 only.
 
-Five worker subagents, each scoped and permission-gated: `explore`/`scout`/`reviewer` (read-only),
-`implementer`/`general` (edit). All pinned to magus. Critical invariant learned the hard way:
-**no subagent permission may be `ask`** (a non-interactive worker hangs forever on an approval
-nobody answers) -- everything a worker needs is `allow`, everything forbidden is `deny`, and all
-five have the scratch-dir grant.
+Three worker subagents, each scoped and permission-gated: `explore`/`reviewer` (read-only),
+`general` (edit). Collapsed from an earlier five after dispatch data showed `scout`/`implementer`
+were dead. All pinned to magus, all `task: deny` (only the orchestrator fans out). Critical
+invariant learned the hard way: **no subagent permission may be `ask`** (a non-interactive worker
+hangs forever on an approval nobody answers) -- everything a worker needs is `allow`, everything
+forbidden is `deny`, and all three have the scratch-dir grant.
 
 Enforcement is in code, not just prose: `.opencode/plugin/gates.js` -- the human-gate (hard-blocks
 destructive git/push/terraform/publish via `tool.execute.before` throw) and the verify-gate
 (deterministic evidence tracking on code edits). `.opencode/plugin/web.js` -- browser tools over
-the Camofox server.
+the Camofox server. `.opencode/plugin/memory.js` -- the sliding-window + recall layer (Layer 5).
 
 ### Layer 4 -- Benchmark harness (bench/, ~1440 lines)
 
@@ -107,9 +109,25 @@ The measurement instrument. Verified working:
   cross-checks the opencode SQLite DB for child sessions + provider, requires BOTH correctness
   AND delegation to pass. VERIFIED 4/4 post-compaction-fix.
 - `speed.py` -- TTFT/prefill/decode/concurrency/cache on both nodes.
-- `compare.py`/`compare.sh` -- abliterated-vs-base A/B orchestration.
+- `compare.py`/`compare.sh` -- abliterated-vs-base and quant A/B orchestration, with a runtime
+  VRAM-spill guard that invalidates (rather than grinds on) a config that spills to CPU.
+- `memory.py` -- the memory A/B: a long multi-turn coding session that plants facts, buries them
+  past the window, then probes recall. LLM-judged (per-type, verbosity-tolerant), closed-book-
+  controlled, with an eviction-verification gate (won't report unless the planted facts provably
+  left the window) and an agentic-recall probe (subagent findings must survive the slide).
 - `report.py` -- consolidated scorecard aggregation.
 - `bench.sh` -- driver with preflight health/plan, SIZE tiers, cross-harness ETA/progress.
+
+### Layer 5 -- Memory (sliding window + persistent recall)
+
+Replaces opencode's lossy compaction with a sliding window over a persistent store, so a long
+session runs for millions of tokens without the mid-session lobotomy of summarize-and-drop.
+`compaction.auto: false` hands eviction to `.opencode/plugin/memory.js`; a `messages.transform`
+hook holds a ~160k input window and evicts the oldest turns (persisting each as an episode) while
+reserving a decode-headroom budget. Recall is via `memory_search`/`memory_write` tools (available
+to orchestrator and workers) over Redis (hot, shared, write-stream) draining to SQLite (durable,
+FTS5, thread-scoped). Zero new dependencies -- built-in `node:sqlite` and a raw-socket RESP
+client. The knowledge-graph tier is deliberately deferred. Design: `docs/memory-design.md`.
 
 ## What is verified working (not claimed -- tested this session)
 
@@ -148,8 +166,9 @@ Not yet built:
    the new harness structure.
 5. **Wire it together** -- bench.sh node-routing, delete hand-rolled evals, adopt zeta's output
    patterns (per-run dir, manifest, summary.json+md, median+p95 latency).
-6. **SWE-bench / LiveCodeBench** (heavy, real agentic coding) and **memory eval** (LongMemEval/DMR,
-   once a memory layer exists) -- later.
+6. **SWE-bench / LiveCodeBench** (heavy, real agentic coding) -- later. The **memory eval** gap is
+   now addressed: `bench/memory.py` A/Bs sliding-window recall vs compaction (LongMemEval/DMR-
+   grounded), though it still needs a live end-to-end run to confirm the plugin fires as designed.
 
 ## The three things this system measures, which are genuinely different
 

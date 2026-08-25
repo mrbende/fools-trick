@@ -76,7 +76,9 @@ def build_probes(seed):
          "If I never gave one, say NONE.",
          "the user never provided a Postgres connection string", True),
     ]
-    return plants, probes
+    # The deploy token is unique, planted in the FIRST turn, and disjoint from everything else --
+    # its presence in the store is the eviction-verification needle.
+    return plants, probes, token
 
 
 # AGENTIC-RECALL probes: end-to-end coding scale. Early turns make the orchestrator DISPATCH A
@@ -135,6 +137,28 @@ def judge_answer(url, model, ptype, question, gold, answer, timeout=120):
         return False
 
 
+def episodes_have(project, thread, needle):
+    """Query the durable store (via the JS query CLI) for whether an episode containing `needle`
+    exists in this thread. Used by the eviction-verification gate."""
+    q = os.path.join(project, ".opencode/memory/query.mjs")
+    try:
+        p = subprocess.run(["node", q, "has", thread, needle], cwd=project,
+                           capture_output=True, text=True, timeout=30, env={**os.environ})
+        return p.stdout.strip().splitlines()[-1].strip() == "yes" if p.stdout.strip() else False
+    except Exception:
+        return False
+
+
+def episode_count(project, thread):
+    q = os.path.join(project, ".opencode/memory/query.mjs")
+    try:
+        p = subprocess.run(["node", q, "count", thread], cwd=project,
+                           capture_output=True, text=True, timeout=30, env={**os.environ})
+        return int(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else 0
+    except Exception:
+        return 0
+
+
 def run_turn(project, prompt, session_id, timeout, extra_env=None):
     cmd = ["opencode", "run", "--format", "json"]
     if session_id:
@@ -180,7 +204,7 @@ def closed_book_control(project, probes, judge_url, judge_model, timeout):
 def run_arm(a):
     os.makedirs(RESULTS, exist_ok=True)
     out = open(os.path.join(RESULTS, f"{a.arm}.jsonl"), "w")
-    plants, probes = build_probes(a.seed)
+    plants, probes, plant_needle = build_probes(a.seed)
 
     discover, agentic_probes = build_agentic(a.project)
 
@@ -210,6 +234,29 @@ def run_arm(a):
                               sid, a.timeout, arm_env)
         if rc == 124:
             ui.log.warning("bury turn %d timed out; proceeding to probe", i); break
+
+    # EVICTION-VERIFICATION GATE (the validity control that makes this a MEMORY test, not a
+    # long-context test). For the memory-ON arm, the earliest planted fact MUST have been evicted
+    # from the live window and persisted as an episode by now. If it hasn't, the bury phase was
+    # too short -- the fact is still in context, so a correct probe answer would prove nothing.
+    # Abort as an invalid measurement rather than report a misleading number.
+    if a.arm == "on":
+        # give the drain a moment, then check the deploy-token needle is in the store for this thread
+        time.sleep(2)
+        n_ep = episode_count(a.project, sid or "")
+        evicted = episodes_have(a.project, sid or "", plant_needle)
+        ui.log.info("eviction gate: thread=%s stored_episodes=%d earliest-plant-evicted=%s",
+                    sid, n_ep, evicted)
+        if not evicted:
+            ui.log.error(
+                "INVALID: planted fact %r not found in the memory store after %d bury turns -- it "
+                "likely never left the live window. Increase --bury-turns (or lower "
+                "WINDOW_INPUT_TOKENS). Not reporting a number that would measure long-context, not "
+                "memory.", plant_needle, a.bury_turns)
+            out.write(json.dumps({"test": "memory", "arm": a.arm, "summary": True, "valid": False,
+                                  "reason": "no eviction: bury insufficient", "bury_turns": a.bury_turns,
+                                  "stored_episodes": n_ep}) + "\n")
+            out.close(); return
     # PROBE
     tbl = ui.Table(f"memory[{a.arm}]", ["probe", "pass"], None, justify=["left", "center"])
     passed = total = 0

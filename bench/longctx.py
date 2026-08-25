@@ -119,7 +119,7 @@ def main():
         out.write(json.dumps({"test": "longctx_summary", "passed": passed, "total": total}) + "\n")
         out.close()
     ui.summary("longctx", passed, total, "delegation + long-context use both required")
-    return 0 if passed == total else 1
+    return 0  # successful measurement exits 0 regardless of score; see e2e.py rationale.
 
 
 if __name__ == "__main__":

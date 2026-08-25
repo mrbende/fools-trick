@@ -52,10 +52,12 @@ runs NON-INTERACTIVELY -- there is no human to answer a permission prompt. There
   waiting for an approval that never comes. Every worker permission is `allow` or `deny`.
   A denied command returns an error the worker can reason about; a hung one returns nothing.
 - Every worker needs the shared scratch dir: `external_directory: { "/tmp/fools-trick/scratch/**": allow }`.
-  Writers (`general`, `implementer`) create artifacts there; read-only workers
-  (`explore`, `scout`, `reviewer`) read artifacts other workers wrote. Missing this grant
-  makes a scratch access hit the default `ask` and hang -- the failure that silently broke
-  artifact-passing before it was fixed.
+  The writer (`general`) creates artifacts there; read-only workers (`explore`, `reviewer`) read
+  artifacts other workers wrote. Missing this grant makes a scratch access hit the default `ask`
+  and hang -- the failure that silently broke artifact-passing before it was fixed.
+- The roster is three workers: `explore`, `general`, `reviewer` (collapsed from an earlier five;
+  `scout`/`implementer` were removed as dead). All three carry `task: deny` -- no worker delegates
+  further; only the orchestrator fans out. `subagent_depth: 1`.
 - The human-gate (destructive git / infra / publish) is enforced by the `gates` plugin
   (`.opencode/plugin/gates.js`), which throws in `tool.execute.before`. This binds every
   agent including workers, and belt-and-suspenders `ask` rules on the primary `build` agent
@@ -87,3 +89,26 @@ After: 1 read, 0 compactions, 3 turns, 69 tokens.
 
 This is guarded by a test (`tests/test_lib.sh`, "output < context for all models"). Do not set a
 model's output limit at or above its context limit.
+
+## The memory layer integration (Redis container + compaction override)
+
+The memory layer (`docs/memory-design.md`) adds three integration seams:
+
+- **Redis is a `make up`-managed prerequisite.** `up.sh` starts a `redis:7-alpine` container
+  (`fools-redis`) before the worker and orchestrator; `down.sh` removes it. It is ephemeral by
+  design (short-term memory); the durable episode store is SQLite at
+  `~/.local/share/fools-trick/memory.db`, which is NOT in the repo or `/tmp` and survives reboots.
+  If Redis is down, the memory plugin degrades soft: writes go straight to SQLite (durability
+  first), recall still works.
+- **Compaction is disabled in favor of our sliding window.** `opencode.json` sets
+  `compaction.auto: false` so opencode does not summarize-and-drop; the `memory.js` plugin's
+  `messages.transform` hook owns eviction, persisting evicted turns as episodes. A test guards the
+  decode-headroom invariant: `WINDOW_INPUT_TOKENS + DECODE_HEADROOM < orchestrator context`, so
+  the input window can never starve the output decode budget.
+- **The plugin binds every agent, including subagents.** `memory_search`/`memory_write` are
+  registered via the plugin `tool` hook, so both the orchestrator and the workers can read and
+  write the shared store; each episode is attributed by `sessionID` and `agent` from the tool
+  context, and keyed by the conversation's root thread so recall is scoped per conversation.
+
+The memory modules are plain Node using the built-in `node:sqlite` and a zero-dependency RESP
+client over a TCP socket (`.opencode/memory/`), so the layer adds no npm dependencies.

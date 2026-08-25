@@ -203,7 +203,10 @@ def main():
     emit({"test": "e2e_summary", "passed": passed, "total": len(tasks)}, out)
     if out: out.close()
     if md: md.close()
-    return 0 if passed == len(tasks) else 1
+    # Exit 0 on a successful MEASUREMENT regardless of score -- a benchmark that measures 3/4 has
+    # done its job. Only infrastructure failure (unreachable server, crash) should be non-zero, so
+    # a realistic imperfect score never aborts `make bench` before finish() writes the report.
+    return 0
 
 
 if __name__ == "__main__":

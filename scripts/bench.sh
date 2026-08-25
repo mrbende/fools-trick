@@ -252,8 +252,19 @@ case "${1:-all}" in
   memory)     STEP_TOTAL=3; preflight; memory_ab; finish ;;
   # quick: fast representative signal across the whole system -- capability + code/tools + e2e.
   quick)      SIZE=smoke; STEP_TOTAL=4; preflight; capability_worker; code_tools_worker; e2e_run; finish ;;
-  # all: the full instrument. STEP_TOTAL counts each step() call across the run for ETA.
-  all)        STEP_TOTAL=12; preflight; speed_worker; speed_fool; capability_worker; capability_fool; \
-              code_tools_worker; safety_worker; e2e_run; longctx_fool; finish ;;
+  # all: the full instrument. STEP_TOTAL counts each step() call across the run for ETA. Each step
+  # is guarded with `|| warn` so a single step's failure (infra hiccup, non-zero exit) can never
+  # abort the run before finish() writes the report/xlsx -- a benchmark must always produce its
+  # scorecard from whatever completed.
+  all)        STEP_TOTAL=12; preflight
+              speed_worker      || warn "speed[worker] step errored"
+              speed_fool        || warn "speed[fool] step errored"
+              capability_worker || warn "capability[worker] step errored"
+              capability_fool   || warn "capability[fool] step errored"
+              code_tools_worker || warn "code/tools step errored"
+              safety_worker     || warn "safety step errored"
+              e2e_run           || warn "e2e step errored"
+              longctx_fool      || warn "longctx step errored"
+              finish ;;
   *) die "usage: bench.sh {all|quick|capability|code|safety|longctx|speed|e2e}   (SIZE=smoke|small|large|max)" ;;
 esac
