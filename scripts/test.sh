@@ -41,7 +41,7 @@ config_tests() {
   local checker='
 import sys, json
 d = json.load(sys.stdin); ag = d.get("agent", {})
-prim = {"build", "plan"}; sub = {"explore", "scout", "general", "implementer", "reviewer"}
+prim = {"build", "plan"}; sub = {"explore", "general", "reviewer"}  # 3-agent roster (data-driven)
 bad = 0
 for n in prim | sub:
     a = ag.get(n)
@@ -49,6 +49,9 @@ for n in prim | sub:
     m = a.get("model", "")
     if n in sub and not m.startswith("magus/"): print(f"worker {n} not on magus: {m}"); bad = 1
     if n in prim and not m.startswith("fool-ds4/"): print(f"primary {n} not on fool: {m}"); bad = 1
+    # leaf workers must not delegate (only the orchestrator fans out)
+    if n in sub and a.get("permission", {}).get("task") != "deny":
+        print(f"worker {n} can delegate (task != deny)"); bad = 1
 if not d.get("small_model", "").startswith("magus/"): print("small_model not on magus"); bad = 1
 sys.exit(bad)
 '

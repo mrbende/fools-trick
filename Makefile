@@ -47,14 +47,8 @@ logs: ## unified logs: worker (magus) + orchestrator (fool) interleaved, node-pr
 
 ##@ Weights
 .PHONY: weights
-weights: ## worker weights: ensure on NAS + fast-copy to local NVMe (magus)
-	@$(S)/weights.sh worker
-.PHONY: fool-weights
-fool-weights: ## DeepSeek weights: one-time download+coalesce local, archive raw to NAS (fool)
-	@$(S)/fool-weights.sh
-.PHONY: weights-status
-weights-status: ## show where weights live (NAS / local) and sizes
-	@$(S)/weights.sh status
+weights: ## show all quants (NAS/local/size), the active default+ctx, and orchestrator weights. QUANT=<tag> provisions one (QUANT=deepseek for fool)
+	@$(S)/weights.sh $(if $(QUANT),QUANT=$(QUANT),)
 
 ##@ Quality
 .PHONY: test
@@ -63,24 +57,44 @@ test: ## full test suite: unit (bench parsers + lib) + config + live round-trip
 .PHONY: test-unit
 test-unit: ## fast offline unit tests only (no servers needed)
 	@$(S)/test.sh unit
+# SIZE=smoke|small|large|max controls sample count per eval (default small). e.g. make bench SIZE=smoke
+SIZE ?= small
 .PHONY: bench
-bench: ## all benchmarks: speed + eval on both servers, then e2e harness
-	@$(S)/bench.sh all
+bench: ## full instrument: speed+capability+code/tools+safety+e2e+long-context (SIZE=smoke|small|large|max)
+	@SIZE=$(SIZE) $(S)/bench.sh all
+.PHONY: bench-quick
+bench-quick: ## fast representative signal: capability + code/tools + e2e at smoke size
+	@$(S)/bench.sh quick
+.PHONY: bench-capability
+bench-capability: ## lm-eval reasoning/IF (both nodes) + MC loglikelihood (orchestrator)
+	@SIZE=$(SIZE) $(S)/bench.sh capability
+.PHONY: bench-code
+bench-code: ## code (HumanEval+, executed) + tool-calling (BFCL-style AST) on worker
+	@SIZE=$(SIZE) $(S)/bench.sh code
+.PHONY: bench-safety
+bench-safety: ## refusal/compliance on AdvBench/JBB/XSTest, StrongREJECT judge (the abliteration measure)
+	@SIZE=$(SIZE) $(S)/bench.sh safety
+.PHONY: bench-longctx
+bench-longctx: ## long-context: deep needle (passive) + agentic delegation-at-depth (novel)
+	@SIZE=$(SIZE) $(S)/bench.sh longctx
 .PHONY: bench-speed
 bench-speed: ## speed: TTFT/prefill/decode/concurrency/cache (both servers)
-	@$(S)/bench.sh speed both
-.PHONY: bench-eval
-bench-eval: ## quality: real gsm8k + ruler reasoning-at-depth (both servers)
-	@$(S)/bench.sh eval both
+	@$(S)/bench.sh speed
 .PHONY: bench-e2e
-bench-e2e: ## the real eval: whole opencode harness on real fan-out tasks
+bench-e2e: ## delegation: whole opencode harness on real fan-out tasks (DB-verified)
 	@$(S)/bench.sh e2e
-.PHONY: bench-quick
-bench-quick: ## fast signal: worker evals (small n) + e2e, skip slow fool/speed suites
-	@$(S)/bench.sh quick
+.PHONY: bench-quants
+bench-quants: ## A/B quants (Q4_K_S vs IQ3_M vs Q3_K_M) on code+tools+gsm8k -- does a smaller quant hold tool-calling
+	@$(S)/compare.sh quants
 .PHONY: bench-compare
-bench-compare: ## abliterated-vs-base A/B on the worker (gsm8k+code+tools), then diff
+bench-compare: ## abliterated-vs-base A/B on the worker, then diff
 	@$(S)/compare.sh all
+.PHONY: bench-sheets
+bench-sheets: ## export latest run to Google Sheets (needs GOOGLE_APPLICATION_CREDENTIALS); xlsx always on disk
+	@stamp=$$(ls -t /tmp/fools-trick/bench/report-*.md 2>/dev/null | head -1 | sed 's/.*report-//;s/.md//'); \
+	if [ -z "$$stamp" ]; then echo "no run found"; exit 1; fi; \
+	.bench-venv/bin/python bench/export_xlsx.py --dir /tmp/fools-trick/bench --stamp $$stamp; \
+	.bench-venv/bin/python bench/export_sheets.py --dir /tmp/fools-trick/bench --stamp $$stamp --share-with $${BENCH_SHARE_WITH:-reedbndr@gmail.com}
 
 ##@ Per-node (advanced)
 .PHONY: worker-up

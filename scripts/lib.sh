@@ -95,3 +95,75 @@ fool_spark_synced() {
 # Worker runs as a systemd --user transient unit; journald owns its log/lifecycle.
 worker_active() { systemctl --user is-active --quiet "$WORKER_UNIT" 2>/dev/null; }
 worker_state()  { systemctl --user is-active "$WORKER_UNIT" 2>/dev/null || echo inactive; }
+
+# --- VRAM-fit / CPU-spill detection -------------------------------------------
+# A worker config is only VALID if inference stays fully on the two GPUs. With -ngl 999 the
+# hybrid arch has two failure modes we must catch instead of waiting on:
+#   1. LOAD OOM  : the model/KV/compute buffer does not fit at boot. llama.cpp prints
+#      "failed to allocate CUDAx buffer" / "failed to allocate compute buffers" and aborts.
+#      wait_health would then spin the full timeout -- we detect the abort in the journal
+#      and fail in seconds.
+#   2. RUNTIME SPILL : it fits at boot (short prompts) but once a slot fills under real long
+#      context the overflow silently falls to CPU -- GPUs go idle while ~32 cores peg and
+#      throughput decays. This is worse than an abort because it RUNS, slowly, forever.
+# The reliable runtime signal is: worker is actively processing (a slot busy) yet BOTH GPUs
+# report near-zero compute utilization. That is only possible if the math moved to the CPU.
+
+# Did the just-attempted worker boot ABORT with a CUDA/compute allocation failure?
+# Returns 0 (true) if a load-time OOM abort is present in the recent journal. Scoped to the last
+# 90s because callers only ask right after a start attempt; the OOM aborts within ~2s of launch,
+# so a fresh failure is always recent and we never match an aged-out earlier boot.
+worker_load_oom() {
+  journalctl --user -u "$WORKER_UNIT" --since "90 seconds ago" --no-pager -o cat 2>/dev/null \
+    | grep -qiE "failed to allocate (CUDA[0-9]+ buffer|compute buffers)|ggml_gallocr_reserve"
+}
+
+# Fraction of a sampling window in which the worker's PROCESS is burning CPU hard (a proxy for
+# "a slot is actively computing"). Reads /proc/PID/stat utime+stime deltas. Returns cores busy
+# (float-ish integer: 100 == ~1 full core) as an integer of hundredths-of-a-core... we keep it
+# simple and return whole cores busy over the interval.
+worker_cpu_cores() {
+  local pid="$1" interval="${2:-2}" j0 j1 hz
+  hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
+  j0="$(awk '{print $14+$15}' /proc/$pid/stat 2>/dev/null)" || return 1
+  sleep "$interval"
+  j1="$(awk '{print $14+$15}' /proc/$pid/stat 2>/dev/null)" || return 1
+  awk -v d=$(( j1 - j0 )) -v hz="$hz" -v t="$interval" 'BEGIN{printf "%d", (d/hz)/t}'
+}
+
+# Sustained peak GPU compute utilization (max across both cards) over a window: the HIGH-WATER
+# mark across many quick samples. Used to decide if the GPU is doing real work. A single flicker
+# is not enough to clear the spill verdict -- we require sustained GPU activity, so we report the
+# median rather than the max, to reject transient blips.
+gpu_util_median() {
+  local samples="${1:-10}" vals=() u
+  for _ in $(seq "$samples"); do
+    u="$(nvidia-smi --query-gpu=utilization.gpu --format=csv,noheader,nounits 2>/dev/null | sort -rn | head -1)"
+    vals+=("${u:-0}")
+    sleep 0.3
+  done
+  printf '%s\n' "${vals[@]}" | sort -n | awk '{a[NR]=$1} END{print a[int((NR+1)/2)]}'
+}
+
+# Is the worker currently spilling inference to CPU?
+# Precondition: the caller is driving an active long-context probe so a slot is COMPUTING.
+# Signature of a spill: the worker process is burning multiple CPU cores (real compute on CPU)
+# WHILE the GPUs sit idle (median util low across a sustained window). On a healthy config the
+# GPUs carry the decode and median GPU util is clearly nonzero; on a spill they flatline near 0
+# and ~20-32 cores peg. We key on both halves and require them to AGREE, sampled over a window so
+# a single GPU flicker cannot produce a false negative.
+# Returns 0 (true) == SPILLING (invalid config).
+worker_cpu_spilling() {
+  local pid cores gmed
+  pid="$(pgrep -x llama-server | head -1)"
+  [ -n "$pid" ] || return 1  # no worker -> a different failure, not a spill
+  cores="$(worker_cpu_cores "$pid" 2)"          # cores the worker burns over 2s
+  gmed="$(gpu_util_median 10)"                   # median GPU util over ~3s window
+  # Spill == worker is clearly computing on CPU (>= 4 cores) AND GPUs are idle (median <= 10%).
+  # A healthy long-context decode keeps a GPU busy (median well above 10) even though llama's
+  # host threads also spin; the discriminator is the GPU being IDLE while CPU is hot.
+  if [ "${cores:-0}" -ge 4 ] && [ "${gmed:-100}" -le 10 ]; then
+    return 0
+  fi
+  return 1
+}

@@ -136,17 +136,19 @@ hand back the exact command to the user. Everything local and reversible is your
 
 # Choosing a worker
 
+Three workers, each a leaf (they cannot delegate -- fan-out is yours alone):
+
 - @explore  -- read-only search and codebase Q&A. "Where is X", "how does Y work", locate files,
-              summarize a subsystem. Use it liberally and in parallel to keep raw code out of
-              your own window. It cannot edit.
-- @scout    -- external docs and dependency research. Library APIs, upstream source, version
-              behavior. Use before assuming a dependency lacks a capability.
-- @implementer -- one well-scoped edit/file/function. Fast, minimal-scope, no wandering. Your
-              default executor for a single clean unit.
-- @general  -- multi-step work that may touch several files and needs some judgment. Heavier than
-              @implementer; use when a unit is not cleanly atomic but still self-contained.
-- @reviewer -- read-only bug/edge-case/style review of a diff or file. Your gate before accepting
-              work. Cannot edit.
+              summarize a subsystem. Reads the codebase; can persist a large findings artifact to
+              /tmp/fools-trick/scratch/ but never edits repo files. Dispatch liberally and in
+              parallel to keep raw code out of your own window.
+- @general  -- the workhorse executor. Any edit/build/test unit, multi-file work needing judgment,
+              and external dependency research (it has webfetch and can git-clone upstream to
+              inspect). Full edit + bash. Your default for anything that changes files or needs
+              more than pure search.
+- @reviewer -- read-only bug/edge-case/style review of a diff or file. Cannot edit. This is your
+              quality GATE (loop step 5): before accepting a general worker's non-trivial change,
+              dispatch @reviewer on the diff and fold its findings back in.
 
 You can invoke several in one turn. Do so whenever units are independent.
 

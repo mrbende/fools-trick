@@ -15,6 +15,14 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/config.sh"
 source "$HERE/lib.sh"
 
+# Quiet the harness internals so the CLI shows only our coherent step lines + result tables,
+# not lm-eval/HF/datasets chatter. The full detail still lands in the per-run logfile.
+export LMEVAL_LOG_LEVEL="${LMEVAL_LOG_LEVEL:-WARNING}"
+export HF_HUB_DISABLE_PROGRESS_BARS=1
+export DATASETS_VERBOSITY=error
+export TRANSFORMERS_VERBOSITY=error
+export TOKENIZERS_PARALLELISM=false
+
 BENCH_DIR="${BENCH_DIR:-/tmp/fools-trick/bench}"
 mkdir -p "$BENCH_DIR"
 STAMP="$(date +%Y%m%d-%H%M%S)"
@@ -27,9 +35,45 @@ LOG="$BENCH_DIR/$STAMP.log"
 
 [ -x "$PY" ] || die "bench venv missing ($PY). create: python3 -m venv .bench-venv && .bench-venv/bin/pip install datasets rich"
 REPORT="$OPENCODE_PROJECT_DIR/bench/report.py"
+MANIFEST="$OPENCODE_PROJECT_DIR/bench/manifest.py"
+SHEETS="$OPENCODE_PROJECT_DIR/bench/export_sheets.py"
+XLSX="$OPENCODE_PROJECT_DIR/bench/export_xlsx.py"
 CAP="$OPENCODE_PROJECT_DIR/bench/capability.py"
 WORKER_TOKENIZER="${WORKER_TOKENIZER:-Qwen/Qwen3.8-27B}"
 serving() { http_ok "$1/v1/models" || http_ok "$1/health"; }
+
+# Gate worker suites on the served worker being fully GPU-resident under load. A config that fits
+# at boot can still spill to CPU once a slot fills at long context (GPUs idle, ~32 cores pegged,
+# throughput decaying) -- those numbers are garbage. We probe ONCE (fill a slot, sample GPU
+# residency) and cache the verdict; if it spills, worker suites are skipped with a logged reason
+# rather than run CPU-bound. Set BENCH_SKIP_FIT=1 to bypass (e.g. when you know it fits).
+WORKER_FIT="unknown"
+worker_fit_ok() {
+  [ "${BENCH_SKIP_FIT:-0}" = "1" ] && return 0
+  [ "$WORKER_FIT" = "ok" ] && return 0
+  [ "$WORKER_FIT" = "spill" ] && return 1
+  serving "$WORKER_URL" || { WORKER_FIT="spill"; return 1; }
+  say "checking worker VRAM residency under long-context load (one-time)"
+  local probe_ctx=$(( ${WORKER_CTX_PER_SLOT:-40960} - 2048 ))
+  ( "$PY" "$SPEED" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --engine llama \
+      --depths "$probe_ctx" --concurrency 4 --reps 1 --timeout 900 \
+      --out "$BENCH_DIR/fitprobe-$STAMP.jsonl" >/dev/null 2>&1 ) &
+  local pp=$!; sleep 20
+  if worker_cpu_spilling; then
+    # A spilled worker keeps burning CPU after the client cancels; kill the probe AND down the
+    # worker so subsequent (fool-only) suites are not starved by a wedged CPU-grinding slot.
+    kill "$pp" 2>/dev/null || true
+    "$HERE/down.sh" worker >/dev/null 2>&1 || true
+    err "worker SPILLS to CPU at ctx=$probe_ctx x ${WORKER_PARALLEL:-4} (GPU idle under load) -- worker suites skipped, worker stopped"
+    dim "  reduce WORKER_CTX_PER_SLOT so 4 full slots fit in VRAM, or use a smaller quant, then rerun"
+    printf '{"test":"_worker_fit","summary":true,"valid":false,"reason":"cpu-spill at ctx=%s x %s"}\n' \
+      "$probe_ctx" "${WORKER_PARALLEL:-4}" >> "$BENCH_DIR/fit-$STAMP.jsonl"
+    WORKER_FIT="spill"; return 1
+  fi
+  wait "$pp" 2>/dev/null || true
+  ok "worker fully GPU-resident under load"
+  WORKER_FIT="ok"; return 0
+}
 
 # SIZE selects how many RANDOM samples per task each harness runs: smoke|small|large|max.
 # It threads to every harness (lm-eval --size, safety --n, e2e task subset) so one flag
@@ -62,6 +106,9 @@ preflight() {
   [ "$w" = "DOWN" ] && warn "worker down -> worker suites will be skipped"
   [ "$f" = "DOWN" ] && warn "orchestrator down -> fool + e2e suites will be skipped/fail"
   dim "  results -> $BENCH_DIR/  (size=$SIZE)"
+  # Capture the run manifest up front (git state + live node shapes) so the run is reproducible.
+  "$PY" "$MANIFEST" --stamp "$STAMP" --size "$SIZE" --worker-url "$WORKER_URL" \
+    --fool-url "$FOOL_URL" --out "$BENCH_DIR" >/dev/null 2>&1 || true
   echo
 }
 
@@ -69,11 +116,21 @@ finish() {
   echo
   "$PY" "$REPORT" --dir "$BENCH_DIR" --stamp "$STAMP" \
     --md "$BENCH_DIR/report-$STAMP.md" 2>/dev/null || true
+  # Always write an .xlsx scorecard to disk -- the on-disk report, no cloud needed.
+  "$PY" "$XLSX" --dir "$BENCH_DIR" --stamp "$STAMP" 2>/dev/null || warn "xlsx export failed"
   ok "results under $BENCH_DIR (stamp $STAMP)"
+  # Google Sheets is the optional cloud upgrade: needs GOOGLE_APPLICATION_CREDENTIALS (the target
+  # account's service-account JSON). Auto-runs when creds are present; shared to BENCH_SHARE_WITH.
+  if [ -n "${GOOGLE_APPLICATION_CREDENTIALS:-}" ] && [ "${BENCH_SHEETS:-1}" = "1" ]; then
+    say "exporting scorecard to Google Sheets (shared to $BENCH_SHARE_WITH)"
+    "$PY" "$SHEETS" --dir "$BENCH_DIR" --stamp "$STAMP" \
+      ${BENCH_SHARE_WITH:+--share-with "$BENCH_SHARE_WITH"} || warn "sheets export failed"
+  fi
 }
 
 speed_worker() {
   serving "$WORKER_URL" || { warn "worker not serving; skipping speed-worker"; return; }
+  step "speed[worker] TTFT/prefill/decode/concurrency"
   # deepest depth must stay under the per-slot context or the server 400s; leave headroom.
   local deep=$(( WORKER_CTX_PER_SLOT - 4096 ))
   "$PY" "$SPEED" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --engine llama \
@@ -82,60 +139,101 @@ speed_worker() {
 }
 speed_fool() {
   serving "$FOOL_URL" || { warn "orchestrator not serving; skipping speed-fool"; return; }
+  step "speed[fool] TTFT/prefill/decode/cache"
   "$PY" "$SPEED" --url "$FOOL_URL" --model "$FOOL_MODEL_ID" --engine vllm \
     --depths 1024 16384 65536 131072 --concurrency 1 --reps 1 --timeout 1800 \
     --out "$BENCH_DIR/speed-fool-$STAMP.jsonl" --md "$BENCH_DIR/speed-$STAMP.md" --logfile "$LOG"
 }
 
-eval_worker() {
-  serving "$WORKER_URL" || { warn "worker not serving; skipping eval-worker"; return; }
-  local jl="$BENCH_DIR/eval-worker-$STAMP.jsonl" md="$BENCH_DIR/eval-$STAMP.md"
-  local n_gsm=40 n_code=15
-  [ "$QUICK" = "1" ] && { n_gsm=10; n_code=5; }
-  "$PY" "$EVAL" gsm8k --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n "$n_gsm" \
+# SIZE -> per-eval sample count. One knob controls the whole run's cost.
+size_n() { case "$SIZE" in smoke) echo 5;; small) echo 25;; large) echo 200;; max) echo 0;; *) echo 25;; esac; }
+# Wrappers for the two URL conventions: capability.py/safety.py want the URL WITH /v1;
+# eval.py (code/tools/deep) adds /v1 itself, so it wants the bare base.
+CAP="$OPENCODE_PROJECT_DIR/bench/capability.py"
+SAFETY="$OPENCODE_PROJECT_DIR/bench/safety.py"
+LONGCTX="$OPENCODE_PROJECT_DIR/bench/longctx.py"
+WORKER_TOK="${WORKER_TOKENIZER:-Qwen/Qwen3.8-27B}"
+FOOL_TOK="${FOOL_TOKENIZER:-deepseek-ai/DeepSeek-V3}"
+
+# Capability via lm-eval: reasoning + instruction-following (both nodes, generative) and
+# multiple-choice loglikelihood (orchestrator only). Node-routed inside capability.py.
+capability_worker() {
+  serving "$WORKER_URL" || { warn "worker down; skip capability-worker"; return; }
+  worker_fit_ok || { warn "worker spills to CPU; skip capability-worker (would run CPU-bound)"; return; }
+  step "capability[worker] gen (gsm8k, ifeval)"
+  "$PY" "$CAP" --node worker --url "$WORKER_URL/v1" --model "$WORKER_MODEL_ID" \
+    --tokenizer "$WORKER_TOK" --tier gen --size "$SIZE" --out "$BENCH_DIR/cap-worker-$STAMP"
+}
+capability_fool() {
+  serving "$FOOL_URL" || { warn "orchestrator down; skip capability-fool"; return; }
+  step "capability[fool] gen + MC (mmlu/arc/hellaswag/winogrande loglikelihood)"
+  local tier="gen"; [ "$SIZE" = "max" ] || [ "$SIZE" = "large" ] && tier="full"
+  "$PY" "$CAP" --node fool --url "$FOOL_URL/v1" --model "$FOOL_MODEL_ID" \
+    --tokenizer "$FOOL_TOK" --tier "$tier" --size "$SIZE" --out "$BENCH_DIR/cap-fool-$STAMP"
+}
+
+# Code + tool-calling on the worker (our own robust harness; lm-eval mis-extracts code on this
+# reasoning model, BFCL is py3.14-incompatible -- see docs. These own the code+tools axes).
+code_tools_worker() {
+  serving "$WORKER_URL" || { warn "worker down; skip code/tools"; return; }
+  worker_fit_ok || { warn "worker spills to CPU; skip code/tools (would run CPU-bound)"; return; }
+  local jl="$BENCH_DIR/eval-worker-$STAMP.jsonl" md="$BENCH_DIR/eval-$STAMP.md" n; n="$(size_n)"
+  step "code (HumanEval+, executed) on worker"
+  "$PY" "$EVAL" code --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n "${n:-15}" --timeout 300 \
     --out "$jl" --md "$md" --logfile "$LOG"
-  # Real coding: worker completes HumanEval+ functions, we execute the tests. The workers'
-  # actual job -- this is the eval that measures whether they can write correct code.
-  "$PY" "$EVAL" code --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n "$n_code" --timeout 300 \
-    --out "$jl" --md "$md" --logfile "$LOG"
-  # Tool-calling (BFCL-style): the worker's other core competency, and the signal that is
-  # unmeasured on abliterated models -- does it call the right function, and NOT over-trigger.
+  step "tools (BFCL-style AST) on worker"
   "$PY" "$EVAL" tools --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --timeout 120 \
     --out "$jl" --md "$md" --logfile "$LOG"
-  # ruler (long-context) is slower; full run only.
-  [ "$QUICK" = "1" ] || "$PY" "$EVAL" ruler --url "$WORKER_URL" --model "$WORKER_MODEL_ID" \
-    --lengths 4096 8192 16384 --n 20 --out "$jl" --md "$md" --logfile "$LOG"
 }
-eval_fool() {
-  serving "$FOOL_URL" || { warn "orchestrator not serving; skipping eval-fool"; return; }
-  local mdout="$BENCH_DIR/eval-$STAMP.md" jl="$BENCH_DIR/eval-fool-$STAMP.jsonl"
-  "$PY" "$EVAL" gsm8k --url "$FOOL_URL" --model "$FOOL_MODEL_ID" --n 20 --timeout 1800 \
-    --out "$jl" --md "$mdout" --logfile "$LOG"
-  "$PY" "$EVAL" ruler --url "$FOOL_URL" --model "$FOOL_MODEL_ID" --lengths 4096 8192 16384 --n 10 --timeout 1800 \
-    --out "$jl" --md "$mdout" --logfile "$LOG"
-  # Deep multi-hop needle: the ONLY test that exercises DeepSeek's real 384k window.
-  # Chained facts at 32k..370k. Very slow (370k prefill ~10min/item), so few items and
-  # opt-in via FOOL_DEEP=1 to keep the default run tractable.
-  if [ "${FOOL_DEEP:-0}" = "1" ]; then
-    "$PY" "$EVAL" deep --url "$FOOL_URL" --model "$FOOL_MODEL_ID" \
-      --lengths 32768 131072 262144 370000 --n 3 --timeout 3600 \
-      --out "$jl" --md "$mdout" --logfile "$LOG"
-  fi
+
+# Safety / refusal (the abliteration measurement). Target = worker; judge = orchestrator.
+safety_worker() {
+  serving "$WORKER_URL" || { warn "worker down; skip safety"; return; }
+  worker_fit_ok || { warn "worker spills to CPU; skip safety (would run CPU-bound)"; return; }
+  serving "$FOOL_URL" || { warn "orchestrator (judge) down; skip safety"; return; }
+  local jl="$BENCH_DIR/safety-$STAMP.jsonl" n; n="$(size_n)"; [ "$n" = "0" ] && n=100
+  for ds in advbench jbb_harmful xstest; do
+    step "safety[$ds] target=worker judge=fool"
+    "$PY" "$SAFETY" --dataset "$ds" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" \
+      --judge-url "$FOOL_URL" --judge-model "$FOOL_MODEL_ID" --n "$n" \
+      --out "$jl" --logfile "$LOG"
+  done
+}
+
+# Long-context passive retrieval (deep needle) + agentic delegation-at-depth (longctx).
+longctx_fool() {
+  serving "$FOOL_URL" || { warn "orchestrator down; skip long-context"; return; }
+  local depths="8192 32768"; [ "$SIZE" = "large" ] && depths="32768 131072"
+  [ "$SIZE" = "max" ] && depths="32768 131072 262144 370000"
+  step "deep needle (passive retrieval) at $depths"
+  "$PY" "$EVAL" deep --url "$FOOL_URL" --model "$FOOL_MODEL_ID" --lengths $depths --n 1 \
+    --timeout 3600 --out "$BENCH_DIR/eval-fool-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
+  command -v opencode >/dev/null || { warn "opencode missing; skip longctx agentic"; return; }
+  local ld="32000"; [ "$SIZE" = "large" ] && ld="32000 100000"; [ "$SIZE" = "max" ] && ld="32000 100000 200000"
+  step "longctx agentic (delegation at depth) at $ld"
+  "$PY" "$LONGCTX" --project "$OPENCODE_PROJECT_DIR" --depths $ld --n 1 --timeout 2400 \
+    --out "$BENCH_DIR/longctx-$STAMP.jsonl" --logfile "$LOG"
 }
 
 e2e_run() {
-  command -v opencode >/dev/null || die "opencode not installed"
-  serving "$FOOL_URL" || warn "orchestrator not serving -- e2e will fail unless build agent has a reachable model"
+  command -v opencode >/dev/null || { warn "opencode missing; skip e2e"; return; }
+  serving "$FOOL_URL" || { warn "orchestrator down; skip e2e"; return; }
+  step "e2e delegation (opencode fan-out, DB-verified)"
   "$PY" "$E2E" --project "$OPENCODE_PROJECT_DIR" --want-provider magus \
     --out "$BENCH_DIR/e2e-$STAMP.jsonl" --md "$BENCH_DIR/e2e-$STAMP.md" --logfile "$LOG"
 }
 
 case "${1:-all}" in
-  speed) preflight; case "${2:-both}" in worker) speed_worker;; fool) speed_fool;; both|*) speed_worker; speed_fool;; esac; finish ;;
-  eval)  preflight; case "${2:-both}" in worker) eval_worker;; fool) eval_fool;; both|*) eval_worker; eval_fool;; esac; finish ;;
-  e2e)   preflight; e2e_run; finish ;;
-  all)   preflight; speed_worker; speed_fool; eval_worker; eval_fool; e2e_run; finish ;;
-  # quick: fast end-to-end signal -- worker evals (small n) + e2e, skip slow fool/speed suites.
-  quick) QUICK=1; preflight; eval_worker; e2e_run; finish ;;
-  *) die "usage: bench.sh {speed|eval|e2e|all|quick} [worker|fool|both]" ;;
+  capability) STEP_TOTAL=2; preflight; capability_worker; capability_fool; finish ;;
+  code)       STEP_TOTAL=2; preflight; code_tools_worker; finish ;;
+  safety)     STEP_TOTAL=3; preflight; safety_worker; finish ;;
+  longctx)    STEP_TOTAL=2; preflight; longctx_fool; finish ;;
+  speed)      STEP_TOTAL=2; preflight; speed_worker; speed_fool; finish ;;
+  e2e)        STEP_TOTAL=1; preflight; e2e_run; finish ;;
+  # quick: fast representative signal across the whole system -- capability + code/tools + e2e.
+  quick)      SIZE=smoke; STEP_TOTAL=4; preflight; capability_worker; code_tools_worker; e2e_run; finish ;;
+  # all: the full instrument. STEP_TOTAL counts each step() call across the run for ETA.
+  all)        STEP_TOTAL=12; preflight; speed_worker; speed_fool; capability_worker; capability_fool; \
+              code_tools_worker; safety_worker; e2e_run; longctx_fool; finish ;;
+  *) die "usage: bench.sh {all|quick|capability|code|safety|longctx|speed|e2e}   (SIZE=smoke|small|large|max)" ;;
 esac

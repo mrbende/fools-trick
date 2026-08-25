@@ -9,7 +9,7 @@
 #   -sm layer            : ONLY split mode that loads this hybrid-recurrent arch on 2 GPUs
 #                          (row/tensor split cannot partition the SSM state tensors)
 #   -ts 10,12            : VRAM-proportional split; biases layers off GPU0 (desktop ~2GB)
-#   -ctk/-ctv q8_0       : tool-safe KV, MATCHED (mixed K/V types cause silent prefill collapse)
+#   -ctk/-ctv q5_1       : tool-safe KV, MATCHED (q4_0 degrades tool-calling; mixed K/V collapse)
 #   -fa on               : mandatory with quantized KV (context creation fails otherwise)
 #   --parallel 4         : cheap here -- hybrid arch keeps KV small (~16 of 65 blocks)
 #   --cache-reuse 256    : reuse KV across turns; big win for multi-turn agent loops

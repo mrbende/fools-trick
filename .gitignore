@@ -1,4 +1,26 @@
+# opencode runtime
 .opencode/cache/
 .opencode/logs/
+.opencode/node_modules/
+
+# benchmark venv + isolated eval venvs
 .bench-venv/
-bench/__pycache__/
+.bfcl-venv/
+
+# python bytecode
+__pycache__/
+*.pyc
+
+# benchmark outputs (also written to /tmp, but never track any that land in-repo)
+/bench/results/
+/bench/out/
+report-*.md
+*.jsonl
+
+# local model/weight caches, scratch
+/tmp/
+*.log
+
+# benchmark artifacts
+scorecard-*.xlsx
+manifest-*.json

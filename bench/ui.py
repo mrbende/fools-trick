@@ -14,6 +14,9 @@ from rich.console import Console
 from rich.table import Table as _RichTable
 from rich.logging import RichHandler
 
+# Stats live in core (the shared home); re-exported here so existing `ui.wilson` callers work.
+from core import wilson, stat_str  # noqa: F401
+
 console = Console()
 log = logging.getLogger("bench")
 

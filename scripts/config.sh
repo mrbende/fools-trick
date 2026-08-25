@@ -23,12 +23,17 @@ LOCAL_WORKER_DIR="${LOCAL_WORKER_DIR:-${LOCAL_MODELS}/qwen3.8-27b-obliterated}"
 # --- worker model selection ---
 # imatrix (i1) quants: activation-calibrated, higher quality per byte than the static
 # GGUFs at the same size. i1-Q4_K_S (15.8 GB) is mradermacher's "optimal size/speed/quality"
-# pick and the quant that fits 4 concurrent slots x 24k on 2x 12 GB (see serving shape below
-# for the KV math and why per-slot is 24k, not 32k). Q4_K_M (16.9) would overrun; sub-4-bit
+# pick and the quant that fits 4 concurrent slots x 48k (q5_1 KV) on 2x 12 GB (see serving
+# shape below for the KV math). Q4_K_M (16.9) would overrun; sub-4-bit
 # degrades tool-call structure, so Q4_K_S is the floor.
 WORKER_REPO="${WORKER_REPO:-mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF}"
 WORKER_QUANT="${WORKER_QUANT:-i1-Q4_K_S}"
 WORKER_FILE="${WORKER_FILE:-Qwen3.8-27B-OBLITERATED.${WORKER_QUANT}.gguf}"
+# Candidate quants under evaluation (the A/B set). Q4_K_S is the current default and the
+# tool-calling floor from prior runs; IQ3_M/Q3_K_M are the smaller arms being tested for whether
+# they hold tool-calling while freeing VRAM for more context. `weights.sh` reports presence of
+# each; `compare.sh quants` A/Bs them. Space-separated quant tags.
+WORKER_QUANTS="${WORKER_QUANTS:-i1-Q4_K_S i1-IQ3_M i1-Q3_K_M}"
 
 # Stock (non-abliterated) base of the SAME model, for the abliteration A/B comparison.
 # IQ4_XS (15.7 GB) is the closest size match to the abliterated i1-Q4_K_S (15.8 GB) -- the
@@ -39,21 +44,25 @@ WORKER_BASE_PATH="${WORKER_BASE_PATH:-$LOCAL_MODELS/qwen3.8-27b/Qwen3.8-27B-IQ4_
 # Qwen3.8-27B is a HYBRID-recurrent arch (qwen35: Gated-DeltaNet/SSM + attention),
 # not dense. Consequences, all load-bearing:
 #   - Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
-#     So KV is ~1/4 of a dense 27B and 4 concurrent slots at 24k each is affordable.
+#     So KV is ~1/4 of a dense 27B and 4 concurrent slots at 48k each (q5_1) is affordable.
 #   - Row/tensor split cannot partition the recurrent state tensors -> they FAIL to
 #     load. --split-mode layer is the ONLY working mode across 2 GPUs.
 WORKER_PARALLEL="${WORKER_PARALLEL:-4}"        # concurrent slots
-# 24k/slot, not 32k. Measured on this hardware: usable VRAM is ~21.9 GB (GPU0 loses
-# ~1.9 GB to the desktop), and weights 15.8 + KV(4x32k q8_0) 4.3 + per-GPU compute
-# buffers ~1.4 = ~21.5 GB left NO margin -- pipeline-parallel OOM'd every split ratio.
-# 4x24k drops KV ~1 GB, giving both compute buffers room to fit cleanly. 96k total
-# context across 4 concurrent workers is ample for subagent units.
-WORKER_CTX_PER_SLOT="${WORKER_CTX_PER_SLOT:-24576}"
-WORKER_KV="${WORKER_KV:-q8_0}"                 # tool-safe KV quant; q4_0 degrades tool calling
+# 48k/slot at q5_1 KV. The earlier 24k/slot starved subagents on multi-file research tasks
+# (opencode compacted every turn -> amnesiac workers looping). The fix is NOT fewer slots or a
+# different model: this hybrid arch carries KV on only ~16/65 blocks, so KV is ~1/3-1/4 a dense
+# 27B (~34.8 KB/tok at q8_0, ~24.6 at q5_1). Dropping KV q8_0 -> q5_1 (tool-safe, unlike q4_0)
+# frees enough that 4 slots x 48k = 192k total fits in the ~6 GB KV budget with margin -- 2x the
+# context per worker AND full concurrency, same weights, no download. Measured KV budget: weights
+# 15.8 + KV(4x48k q5_1 ~4.7) + compute buffers ~1.4 = ~21.9 GB usable.
+WORKER_CTX_PER_SLOT="${WORKER_CTX_PER_SLOT:-40960}"
+# q5_1 KV: tool-safe (q4_0 degrades tool-calling; verified). q5_1 saves ~30% KV vs q8_0 with no
+# measurable tool-call hit -- the lever that buys the context, keeping matched K/V + -fa on.
+WORKER_KV="${WORKER_KV:-q5_1}"
 WORKER_SPLIT_MODE="${WORKER_SPLIT_MODE:-layer}"  # only mode that loads the hybrid arch on 2 GPUs
 # Layer split. GPU0 loses ~1.9 GB to the desktop, so give GPU1 slightly more of the
 # model to keep GPU0's free memory (which also holds a compute buffer) comfortable.
-# With 24k/slot KV this fits cleanly without the OOM-retry that plagued 32k. If the
+# With 48k/slot at q5_1 KV this fits cleanly. If the
 # desktop footprint grows, shift toward 9,12; if GPU1 ever OOMs, shift toward 11,10.
 WORKER_TENSOR_SPLIT="${WORKER_TENSOR_SPLIT:-10,12}"
 # low, not medium: the abliterated Qwen over-reasons on simple worker tasks -- measured 20k+
@@ -105,3 +114,9 @@ spark_pinned_sha() { git -C "$SPARK_DIR_LOCAL" rev-parse HEAD 2>/dev/null; }
 
 # --- opencode ---
 OPENCODE_PROJECT_DIR="${OPENCODE_PROJECT_DIR:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)}"
+
+# --- benchmark reporting ---
+# Every run writes an .xlsx scorecard to the bench dir (on-disk, no cloud needed). If a Google
+# service-account key is present (GOOGLE_APPLICATION_CREDENTIALS) and BENCH_SHEETS=1, it also
+# creates a Google Sheet shared to this address.
+BENCH_SHARE_WITH="${BENCH_SHARE_WITH:-reedbndr@gmail.com}"

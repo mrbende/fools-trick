@@ -41,7 +41,7 @@ fi
 
 echo
 say "weights"
-"$HERE/weights.sh" status
+"$HERE/weights.sh"
 
 echo
 say "opencode"

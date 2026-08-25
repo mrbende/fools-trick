@@ -37,21 +37,16 @@ fi
 echo; say "3/4 worker weights (Qwen, magus)"
 if [ -f "$LOCAL_WORKER_DIR/$WORKER_FILE" ]; then
   ok "local fast-copy present ($WORKER_FILE)"
-elif [ -f "$NAS_WORKER_DIR/$WORKER_FILE" ]; then
-  say "on NAS but not local; fast-copying"
-  "$HERE/weights.sh" worker-local
+elif [ -f "$NAS_WORKER_DIR/$WORKER_FILE" ] || confirm "worker weights not present; download now (~16 GB to NAS + local)?"; then
+  "$HERE/weights.sh" QUANT="$WORKER_QUANT"
 else
-  if confirm "worker weights not present; download now (~16 GB to NAS + local)?"; then
-    "$HERE/weights.sh" worker
-  else
-    dim "skipped; run 'make weights' before first worker-up"
-  fi
+  dim "skipped; run 'make weights' before first worker-up"
 fi
 
 # 4. DeepSeek weights on fool -- coalesced serving checkpoint present? (fool-weights.sh is check-first)
 echo; say "4/4 DeepSeek weights (orchestrator, fool)"
 if ! fool_reachable || ! ssh_fool "[ -d '$FOOL_SPARK_DIR/.git' ]" 2>/dev/null; then
-  dim "fool clone not ready; provision later with 'make fool-weights'"
+  dim "fool clone not ready; provision later with 'make weights QUANT=deepseek'"
 elif ssh_fool "[ -f '$FOOL_SPARK_DIR/data/tp1/rank-sliced-tp1-manifest.json' ]" 2>/dev/null; then
   ok "TP1 serving checkpoint present on $FOOL_HOST (serves local, no rebuild)"
 else

@@ -7,6 +7,7 @@ temperature: 0.3
 permission:
   edit: allow
   webfetch: allow
+  task: deny            # leaf worker: only the orchestrator fans out
   external_directory:
     "/tmp/fools-trick/scratch/**": allow
   bash:
@@ -19,6 +20,8 @@ permission:
     "git diff*": allow
     "git status*": allow
     "git log*": allow
+    "git clone*": allow   # dep research: clone upstream to inspect (absorbed from scout)
+    "git -C*": allow
     "make *": allow
     "python*": allow
     "node*": allow

@@ -2,8 +2,10 @@
   "$schema": "https://opencode.ai/config.json",
   "autoupdate": false,
   "default_agent": "build",
-  "subagent_depth": 2,
-  "instructions": ["AGENTS.md"],
+  "subagent_depth": 1,
+  "instructions": [
+    "AGENTS.md"
+  ],
   "provider": {
     "fool-ds4": {
       "npm": "@ai-sdk/openai-compatible",
@@ -25,14 +27,14 @@
         }
       }
     },
-     "magus": {
-       "npm": "@ai-sdk/openai-compatible",
-       "name": "magus (2x3080Ti)",
-       "options": {
-         "baseURL": "http://127.0.0.1:8898/v1",
-         "apiKey": "dummy",
-         "timeout": false
-       },
+    "magus": {
+      "npm": "@ai-sdk/openai-compatible",
+      "name": "magus (2x3080Ti)",
+      "options": {
+        "baseURL": "http://127.0.0.1:8898/v1",
+        "apiKey": "dummy",
+        "timeout": false
+      },
       "models": {
         "qwen3.8-27b-obliterated": {
           "name": "Qwen3.8-27B-OBLITERATED i1-Q4_K_S",
@@ -40,7 +42,7 @@
           "attachment": true,
           "reasoning": true,
           "limit": {
-            "context": 24576,
+            "context": 40960,
             "output": 8192
           }
         }
@@ -62,7 +64,10 @@
           "/tmp/fools-trick/scratch/**": "allow"
         },
         "task": {
-          "*": "allow"
+          "*": "deny",
+          "explore": "allow",
+          "general": "allow",
+          "reviewer": "allow"
         },
         "bash": {
           "*": "allow",
@@ -102,9 +107,9 @@
           "/tmp/fools-trick/scratch/**": "allow"
         },
         "task": {
-          "*": "allow",
-          "implementer": "deny",
-          "general": "deny"
+          "*": "deny",
+          "explore": "allow",
+          "reviewer": "allow"
         },
         "bash": {
           "*": "ask",

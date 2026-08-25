@@ -8,6 +8,29 @@ import os, sys, unittest
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "bench"))
 import e2e, eval as ev, speed  # noqa: E402
+import ui  # noqa: E402
+
+
+class TestStats(unittest.TestCase):
+    """Wilson CI must widen for small n and never exceed [0,100], so a 5/5 is never read as a
+    precise 100%."""
+
+    def test_full_small_n_has_wide_ci(self):
+        lo, hi = ui.wilson(5, 5)
+        self.assertLess(lo, 100)          # 100% on n=5 is uncertain
+        self.assertLessEqual(hi, 100.0001)
+
+    def test_larger_n_tighter(self):
+        self.assertGreater(ui.wilson(200, 200)[0], ui.wilson(5, 5)[0])
+
+    def test_zero_total_safe(self):
+        self.assertEqual(ui.wilson(0, 0), (0.0, 0.0))
+        self.assertIn("n=0", ui.stat_str(0, 0))
+
+    def test_stat_str_format(self):
+        s = ui.stat_str(4, 5)
+        self.assertIn("80.0%", s)
+        self.assertIn("n=5", s)
 
 
 class TestDelegationExtract(unittest.TestCase):

@@ -21,14 +21,39 @@ up_worker() {
   # Ensure weights are present (check-first; provisions from NAS or downloads if missing).
   if [ ! -f "$LOCAL_WORKER_DIR/$WORKER_FILE" ]; then
     say "worker weights not local; provisioning"
-    "$HERE/weights.sh" worker
+    "$HERE/weights.sh" QUANT="$WORKER_QUANT"
   fi
   # Launch as a transient systemd user service: journald handles logging + lifecycle,
   # args come from serve.sh (config-driven), no unit file to maintain.
+  # systemd-run starts serve.sh in a FRESH env (units don't inherit the caller's shell env), so
+  # pass through any WORKER_* / model overrides explicitly -- otherwise `WORKER_CTX_PER_SLOT=... make
+  # worker-up` is silently ignored (a real bug we hit). --setenv threads the tunables in.
+  setenv_args=()
+  for v in WORKER_CTX_PER_SLOT WORKER_PARALLEL WORKER_KV WORKER_TENSOR_SPLIT WORKER_SPLIT_MODE \
+           WORKER_REASONING WORKER_MODEL_PATH WORKER_QUANT WORKER_FILE; do
+    [ -n "${!v:-}" ] && setenv_args+=(--setenv="$v=${!v}")
+  done
   systemd-run --user --unit "$WORKER_UNIT" --description "fools-trick worker (Qwen)" \
-    --collect "$HERE/../worker/serve.sh" \
+    "${setenv_args[@]}" --collect "$HERE/../worker/serve.sh" \
     || die "systemd-run failed to start $WORKER_UNIT"
-  wait_health "$WORKER_URL" 300 "worker"
+
+  # Fast-fail on a load-time VRAM OOM instead of waiting the full health timeout: with -ngl 999
+  # a non-fitting config aborts within seconds ("failed to allocate CUDAx buffer"). Poll for both
+  # health and the abort marker; whichever comes first decides.
+  local deadline=$(( $(date +%s) + 300 ))
+  say "waiting for worker health (or fast-fail on VRAM OOM) ..."
+  while [ "$(date +%s)" -lt "$deadline" ]; do
+    if http_ok "$WORKER_URL/v1/models" || http_ok "$WORKER_URL/health"; then
+      ok "worker healthy: $(models_id "$WORKER_URL" || echo "$WORKER_URL")"; return 0
+    fi
+    if ! worker_active && worker_load_oom; then
+      err "worker aborted at load: config does not fit in VRAM (n_ctx=$(( ${WORKER_PARALLEL:-4} * ${WORKER_CTX_PER_SLOT:-40960} )), KV=$WORKER_KV, ts=$WORKER_TENSOR_SPLIT)"
+      dim "  reduce WORKER_CTX_PER_SLOT or WORKER_PARALLEL, or use a smaller quant; see journalctl --user -u $WORKER_UNIT"
+      return 3
+    fi
+    sleep 3
+  done
+  err "worker did not become healthy within 300s"; return 1
 }
 
 up_fool() {
@@ -56,7 +81,7 @@ up_fool() {
   # were never provisioned, warn -- don't trigger a surprise 107 GB download inside serve.
   if ! ssh_fool "[ -f '$FOOL_SPARK_DIR/data/tp1/rank-sliced-tp1-manifest.json' ]" 2>/dev/null; then
     warn "DeepSeek weights not coalesced on $FOOL_HOST yet"
-    confirm "run 'make fool-weights' first? (recommended; otherwise serve will download ~107 GB)" \
+    confirm "run 'make weights QUANT=deepseek' first? (recommended; otherwise serve will download ~107 GB)" \
       && { "$HERE/fool-weights.sh"; } || dim "proceeding; first boot will download+coalesce (slow)"
   fi
   say "launching spark recipe on $FOOL_HOST (ABLATE=$FOOL_ABLATE, effort=$FOOL_EFFORT); serves from local data/tp1"

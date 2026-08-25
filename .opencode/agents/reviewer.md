@@ -5,7 +5,10 @@ model: magus/qwen3.8-27b-obliterated
 steps: 30
 temperature: 0.1
 permission:
-  edit: deny
+  task: deny            # leaf worker: only the orchestrator fans out
+  edit:
+    "*": deny
+    "/tmp/fools-trick/scratch/**": allow
   external_directory:
     "/tmp/fools-trick/scratch/**": allow
   bash:

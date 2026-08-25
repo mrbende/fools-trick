@@ -31,25 +31,31 @@ Task tiers (standard lm-eval task names, all generative):
 """
 import argparse, json, os, random, subprocess, sys
 
+# Code tasks are NOT here: lm-eval's humaneval/mbpp extractors mis-parse this reasoning worker's
+# output (it emits signature+docstring, then "Here is the completed function:" + the real fenced
+# block; the lm-eval instruct filter grabs the signature-only first block -> pass@1=0 despite
+# correct code). Our own bench/eval.py `code` command extracts the fenced block robustly and
+# EXECUTES the EvalPlus tests -- it is the right tool for the code axis on this model. lm-eval
+# owns reasoning/instruction-following/MC (where it is clean and comparable); we own code + tools.
 TIERS = {
     "quick": ["gsm8k", "ifeval"],
-    "gen": ["gsm8k", "ifeval", "humaneval_plus", "mbpp_plus"],  # runs on either node
+    "gen": ["gsm8k", "ifeval"],  # reasoning + instruction-following; code via bench/eval.py code
     "mc": ["mmlu", "arc_challenge", "hellaswag", "winogrande"],  # loglikelihood, ORCHESTRATOR only
-    "full": ["gsm8k", "ifeval", "humaneval_plus", "mbpp_plus", "gpqa_main_generative_n_shot",
-             "bbh_cot_fewshot", "mmlu", "arc_challenge", "hellaswag", "winogrande"],
+    "full": ["gsm8k", "ifeval", "gpqa_main_generative_n_shot", "bbh_cot_fewshot",
+             "mmlu", "arc_challenge", "hellaswag", "winogrande"],
 }
 
 # Size -> samples per task (0 = full dataset). Sampling is RANDOM (via --samples with a
 # fixed seed for reproducibility), not first-N, so small runs are representative.
 SIZE_N = {"smoke": 5, "small": 25, "large": 200, "max": 0}
-TASK_SIZE = {"gsm8k": 1319, "ifeval": 541, "humaneval_plus": 164, "mbpp_plus": 378,
+TASK_SIZE = {"gsm8k": 1319, "ifeval": 541, "humaneval_instruct": 164, "mbpp_plus_instruct": 378,
              "mmlu_pro": 12032, "gpqa_main_generative_n_shot": 448, "bbh_cot_fewshot": 6511,
              "mmlu": 14042, "arc_challenge": 1172, "hellaswag": 10042, "winogrande": 1267}
 # Tasks that require logprobs (multiple-choice/loglikelihood): orchestrator/vLLM only.
 LOGLIK_TASKS = {"mmlu", "mmlu_pro", "arc_challenge", "hellaswag", "winogrande",
                 "gpqa_main_zeroshot", "truthfulqa_mc1", "truthfulqa_mc2"}
 # Tasks that execute model-written code.
-CODE_TASKS = {"humaneval_plus", "mbpp_plus", "humaneval", "mbpp"}
+CODE_TASKS = {"humaneval_instruct", "mbpp_plus_instruct", "humaneval_plus", "mbpp_plus", "humaneval", "mbpp"}
 
 
 def random_samples(tasks, n, seed):
@@ -88,17 +94,21 @@ def run(node, url, model, tokenizer, tasks, n, seed, out_dir, concurrency):
     else:
         client = "local-chat-completions"; base = f"{url}/chat/completions"; chat = True
 
+    # max_length: lm-eval defaults to 2048 when it can't read the tokenizer's context, which
+    # TRUNCATES a reasoning model that thinks-then-answers -> null content -> blank scores
+    # (observed: DeepSeek gsm8k=0 because reasoning ate the 2048 budget before emitting content).
+    # Give the orchestrator (reasoning) a large window; the worker is fine at the default.
+    max_length = 40960 if node == "fool" else 8192
     margs = (f"model={model},base_url={base},tokenizer={tokenizer},"
-             f"num_concurrent={concurrency},tokenized_requests=False")
+             f"num_concurrent={concurrency},tokenized_requests=False,max_length={max_length}")
     cmd = [sys.executable, "-m", "lm_eval", "--model", client, "--tasks", ",".join(tasks),
            "--model_args", margs, "--output_path", out_dir, "--log_samples"]
     if chat:
         cmd += ["--apply_chat_template"]
-    # Code tasks on a chat endpoint need room: the model writes a fenced block, and a small
-    # default gen budget truncates it at ```python (observed: humaneval_plus scored 0 because
-    # the response was cut after the opening fence). Give generous headroom.
-    if any(t in CODE_TASKS for t in tasks):
-        cmd += ["--gen_kwargs", "max_gen_toks=1024"]
+    # Generation budget: reasoning models need room to think THEN answer. Code tasks also need
+    # room for the full fenced block. gen_kwargs max_gen_toks applies to generate_until tasks.
+    gen_toks = 8192 if node == "fool" else (1024 if any(t in CODE_TASKS for t in tasks) else 2048)
+    cmd += ["--gen_kwargs", f"max_gen_toks={gen_toks}"]
     samples = random_samples(tasks, n, seed)
     if samples:
         cmd += ["--samples", json.dumps(samples)]
