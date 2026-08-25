@@ -22,6 +22,10 @@ const WINDOW_INPUT_TOKENS = Number(process.env.WINDOW_INPUT_TOKENS || 160000)
 const RECENT_TTL = Number(process.env.MEMORY_RECENT_TTL || 3600)
 const ENABLED = (process.env.MEMORY_ENABLED ?? "1") === "1"
 
+// The sliding window is the ORCHESTRATOR's mechanism. These are the primary (orchestrator) agents
+// on the deep-context node; every other agent name is a one-shot worker, which is never slid.
+const ORCHESTRATOR_AGENTS = new Set(["build", "plan"])
+
 // Rough token estimate (~3.5 chars/token for code+prose). Cheap and good enough for windowing;
 // we cap conservatively so the estimate erring low still leaves decode headroom.
 const estTokens = (s) => Math.ceil((s ? String(s).length : 0) / 3.5)
@@ -76,11 +80,20 @@ export default async () => {
       }),
     },
 
-    // SLIDING WINDOW. Runs every turn. If the assembled input exceeds WINDOW_INPUT_TOKENS, evict
-    // the OLDEST non-system messages (persisting each as an episode) until back under budget.
-    // System messages and the most recent turns always stay. This replaces opencode's compaction
-    // (which must be disabled via compaction.auto=false in opencode.json) with lossless sliding.
+    // SLIDING WINDOW -- the ORCHESTRATOR's mechanism only. Runs every turn on the orchestrator
+    // (build/plan): if its assembled input exceeds WINDOW_INPUT_TOKENS, evict the OLDEST non-system
+    // messages (persisting each as an episode) until back under budget. Replaces opencode's
+    // compaction (disabled via compaction.auto=false) with lossless sliding.
+    //
+    // Workers are NOT slid. A subagent is a one-shot session that does a delineated task in its
+    // fixed allotment and returns a digest -- it doesn't accumulate turns to slide, and its window
+    // (32k) is far smaller than WINDOW_INPUT_TOKENS, so sliding would never fire anyway. If a
+    // worker overflows its context, that is an ORCHESTRATION failure (a task too big or a brief
+    // that inlined context the worker should have read itself), to be fixed by decomposing the
+    // task -- not by the memory layer silently dropping the worker's brief mid-request.
     "experimental.chat.messages.transform": async (input, output) => {
+      const agent = input?.agent || ""
+      if (agent && !ORCHESTRATOR_AGENTS.has(agent)) return   // only slide the orchestrator
       const msgs = output?.messages
       if (!Array.isArray(msgs) || !msgs.length) return
       const thread = threadOf(input)

@@ -59,6 +59,16 @@ def answer_text(d):
     return (m.get("content") or m.get("reasoning_content") or "").strip()
 
 
+def was_truncated(d):
+    """True if the model hit its output-token ceiling (finish_reason == 'length'). This is the
+    signal that limit.output is too low for the task -- tune decode headroom from THIS, not fear.
+    A response cut off at 'length' means the answer was clipped mid-generation."""
+    try:
+        return d["choices"][0].get("finish_reason") == "length"
+    except (KeyError, IndexError, TypeError):
+        return False
+
+
 def chat_text(url, model, content, max_tokens, timeout=600, temperature=0):
     """Convenience: return (answer_text, wall_seconds)."""
     d = chat(url, model, content, max_tokens, timeout, temperature)

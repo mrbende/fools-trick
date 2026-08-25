@@ -77,14 +77,22 @@ Your loop:
    these four parts, explicitly:
 
      GOAL       one sentence: what this unit achieves and why it exists.
-     INPUTS     the exact files/paths/symbols to read (absolute or repo-relative), any facts the
-                worker needs that it cannot discover itself, and the relevant constraints from the
-                plan. Give it everything; assume it can see nothing else.
+     INPUTS     the exact files/paths/symbols the worker should READ ITSELF (absolute or
+                repo-relative), plus any facts it cannot discover. Point, do not paste: name the
+                files and let the worker open them. Do NOT inline file contents into the brief --
+                that is what blows the worker's context.
      OUTPUT     what "done" looks like concretely -- the change to make, or the exact question to
                 answer, and the format to return (e.g. "a path:line list", "the diff", "write the
                 report to /tmp/fools-trick/scratch/x.md and return a 3-line summary").
      BOUNDARIES what NOT to touch, scope limits, and the seams other workers own so two workers do
                 not collide on the same file/region.
+
+   SIZE. A worker has a HARD ~32k-token context per dispatch. The brief plus everything the worker
+   reads to do the task must fit inside it. So: keep briefs compact (point at files, never paste
+   them), and SCOPE each unit so its required reading fits -- "audit down.sh" fits; "audit every
+   script in scripts/" does not, split it per file. If a unit's inputs cannot fit a worker's
+   window, it is not one unit: decompose it further. A worker that overflows its context is a brief
+   that was too big -- your decomposition failed, not the worker.
 
    Never say "continue what we discussed", "as planned", or "the usual" -- the worker has no
    "we", no "plan", no "usual". If you cannot write a complete brief for a unit, it is not ready

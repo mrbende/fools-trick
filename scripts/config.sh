@@ -118,8 +118,12 @@ MEMORY_DB="${MEMORY_DB:-$HOME/.local/share/fools-trick/memory.db}"
 # Sliding-window budget for the orchestrator (384k context). Hold this many INPUT tokens live and
 # slide; reserve DECODE_HEADROOM for output. Invariant: WINDOW_INPUT_TOKENS + DECODE_HEADROOM well
 # under 384k, so decode always has room (input and output compete for the same window).
+# DECODE_HEADROOM must be >= the orchestrator's opencode limit.output (65536), so the window always
+# reserves at least what opencode will let the model generate -- long-form coding answers plus the
+# reasoning tokens DeepSeek burns before the visible answer. 160k input + 96k reserve = 256k, still
+# a wide margin under 384k, and the extra reserve costs nothing until a response actually uses it.
 WINDOW_INPUT_TOKENS="${WINDOW_INPUT_TOKENS:-160000}"
-DECODE_HEADROOM="${DECODE_HEADROOM:-32000}"
+DECODE_HEADROOM="${DECODE_HEADROOM:-96000}"
 MEMORY_RECENT_TTL="${MEMORY_RECENT_TTL:-3600}"   # Redis recent-cache expiry (seconds)
 
 # --- spark serving recipe (submodule here; a matching clone runs on fool) ---
