@@ -2,11 +2,14 @@
 description: Executes a single well-scoped edit, file, or function that the orchestrator has already specified. Fast, minimal-scope, no wandering. The default executor for one clean unit of work. Runs on magus Qwen3.8-27B-OBLITERATED.
 mode: subagent
 model: magus/qwen3.8-27b-obliterated
+steps: 40
 temperature: 0.2
 permission:
   edit: allow
+  external_directory:
+    "/tmp/fools-trick/scratch/**": allow
   bash:
-    "*": ask
+    "*": deny
     "ls*": allow
     "cat*": allow
     "grep*": allow

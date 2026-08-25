@@ -56,6 +56,12 @@ Read it:
 
 - **Just slow.** The orchestrator's prefill + reasoning + worker round-trips are serial across a
   slow stream. Not a bug. Confirm via the DB (children exist) and fool GPU (busy or waiting).
+- **Provider timeout cancelling a slow worker.** The telltale: the delegation DB shows a worker
+  produced thousands of output tokens, yet the task reports "operation timed out" and its scratch
+  artifact was never written -- and the worker journald shows `srv stop: cancel task`. That is
+  opencode cancelling the HTTP request mid-generation. The magus provider `timeout` must be `false`
+  (unbounded); under 4-way contention a worker decodes at ~18-21 tok/s, so any answer over ~5-6k
+  output tokens exceeds a 300s cap. Runaway workers are bounded by `steps`, not wall time.
 - **Worker OOM / degraded load.** If the worker won't hold context or 400s on large prompts,
   check its load log for `cudaMalloc failed` / `retrying without pipeline parallelism`. The fix is
   fewer/smaller slots (`WORKER_CTX_PER_SLOT`, `WORKER_PARALLEL`) -- it fits 4x24k, not 4x32k.

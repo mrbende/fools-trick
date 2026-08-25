@@ -49,6 +49,10 @@ eval_worker() {
     --out "$BENCH_DIR/eval-worker-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
   "$PY" "$EVAL" ruler --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --lengths 4096 8192 16384 --n 20 \
     --out "$BENCH_DIR/eval-worker-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
+  # Real coding: worker completes HumanEval+ functions, we execute the tests. The workers'
+  # actual job -- this is the eval that measures whether they can write correct code.
+  "$PY" "$EVAL" code --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --n 15 --timeout 300 \
+    --out "$BENCH_DIR/eval-worker-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
 }
 eval_fool() {
   serving "$FOOL_URL" || { warn "orchestrator not serving; skipping eval-fool"; return; }
@@ -60,7 +64,7 @@ eval_fool() {
   # Deep multi-hop needle: the ONLY test that exercises DeepSeek's real 384k window.
   # Chained facts at 32k..370k. Very slow (370k prefill ~10min/item), so few items and
   # opt-in via FOOL_DEEP=1 to keep the default run tractable.
-  if [ "${FOOL_DEEP:-1}" = "1" ]; then
+  if [ "${FOOL_DEEP:-0}" = "1" ]; then
     "$PY" "$EVAL" deep --url "$FOOL_URL" --model "$FOOL_MODEL_ID" \
       --lengths 32768 131072 262144 370000 --n 3 --timeout 3600 \
       --out "$jl" --md "$mdout" --logfile "$LOG"

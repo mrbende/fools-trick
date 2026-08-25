@@ -2,9 +2,12 @@
 description: Fast read-only codebase search and question answering. Locates files, traces how a subsystem works, answers "where is X" and "how does Y work". Cannot edit. Runs on magus Qwen3.8-27B-OBLITERATED; cheap, dispatch liberally and in parallel.
 mode: subagent
 model: magus/qwen3.8-27b-obliterated
+steps: 25
 temperature: 0.1
 permission:
   edit: deny
+  external_directory:
+    "/tmp/fools-trick/scratch/**": allow
   bash:
     "*": deny
     "ls*": allow

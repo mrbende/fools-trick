@@ -100,9 +100,17 @@ def default_tasks():
          "prompt": "What port does the worker serve on, per scripts/config.sh? Answer with just the number.",
          "expect": r"8898", "min_subagents": 0},
         {"name": "reasoning",
-         "prompt": ("If the worker runs 4 parallel slots and each holds 32768 tokens, what is the "
+         "prompt": ("If the worker runs 4 parallel slots and each holds 24576 tokens, what is the "
                     "total KV context in tokens? Answer with the number."),
-         "expect": r"131072|131,072", "min_subagents": 0},
+         "expect": r"98304|98,304", "min_subagents": 0},
+        {"name": "substantive-audit",
+         "prompt": ("Dispatch one worker to read scripts/down.sh and write a concise "
+                    "function-by-function audit (one short paragraph per function: purpose, "
+                    "inputs, any bug) to /tmp/fools-trick/scratch/down-audit.md, then return a "
+                    "2-line summary. Keep the audit under 400 words -- concise, not exhaustive."),
+         "expect": r"(down_worker|down_fool|fuser|systemctl)",
+         "min_subagents": 1, "want_provider": "magus",
+         "artifact": "/tmp/fools-trick/scratch/down-audit.md", "artifact_min_bytes": 400},
     ]
 
 
@@ -122,7 +130,7 @@ def main():
     ap.add_argument("--project", required=True)
     ap.add_argument("--tasks", default="")
     ap.add_argument("--want-provider", default="magus", help="provider subagents should run on")
-    ap.add_argument("--timeout", type=int, default=900)
+    ap.add_argument("--timeout", type=int, default=2400)
     ap.add_argument("--out")
     ap.add_argument("--md")
     ap.add_argument("--logfile")
@@ -147,22 +155,36 @@ def main():
         answer, tasks_spawned = extract(events)
         children = db_children(a.project, root)
 
-        n_sub = len(tasks_spawned)
-        types = sorted({d["subagent"] for d in tasks_spawned if d["subagent"]})
+        # The DB is authoritative for delegation: the stream only shows a task part as a spawn
+        # once it reaches completed/error status, so a still-running or timed-out fanout can
+        # show 0 in the stream while the DB proves the children ran. Count the DB children as
+        # the delegation signal, falling back to the stream only when the DB is empty.
+        n_sub = len(children) if children else len(tasks_spawned)
+        types = sorted({d["subagent"] for d in tasks_spawned if d["subagent"]}
+                       or {c.get("agent") for c in children if c.get("agent")})
         # endpoint proof: from DB session rows (authoritative), fallback to stream metadata
         provs = [c.get("prov") for c in children] if children else [d.get("provider") for d in tasks_spawned]
         on_want = bool(provs) and all(p == a.want_provider for p in provs if p)
         tok = sum((c.get("tokens_input", 0) or 0) + (c.get("tokens_output", 0) or 0) for c in children)
         cost = sum(c.get("cost", 0) or 0 for c in children)
 
-        # correctness AND delegation expectation both required to pass
+        # correctness AND delegation expectation both required to pass; an artifact task
+        # additionally requires the worker to have finished writing its file (a mid-generation
+        # timeout produces DB tokens but no artifact -- the failure this catches).
         answer_ok = bool(re.search(t.get("expect", "$^"), answer, re.I)) and rc == 0
         deleg_ok = n_sub >= t.get("min_subagents", 0)
-        ok = answer_ok and deleg_ok
+        artifact_ok = True
+        art = t.get("artifact")
+        if art:
+            try:
+                artifact_ok = os.path.getsize(art) >= t.get("artifact_min_bytes", 1)
+            except OSError:
+                artifact_ok = False
+        ok = answer_ok and deleg_ok and artifact_ok
         passed += ok
 
         rec = {"test": "e2e", "task": t["name"], "pass": bool(ok),
-               "answer_ok": answer_ok, "delegation_ok": deleg_ok, "rc": rc,
+               "answer_ok": answer_ok, "delegation_ok": deleg_ok, "artifact_ok": artifact_ok, "rc": rc,
                "wall_s": round(wall, 1), "subagents": n_sub, "types": types,
                "on_want_provider": on_want, "want_provider": a.want_provider,
                "providers": provs, "tokens": tok, "cost": round(cost, 4),

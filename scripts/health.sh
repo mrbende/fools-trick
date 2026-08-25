@@ -16,8 +16,8 @@ probe() {
   local out
   out="$(curl -fsS --max-time "${HEALTH_TIMEOUT:-120}" "$url/v1/chat/completions" \
     -H 'Content-Type: application/json' \
-    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with the single word: ok\"}],\"max_tokens\":16,\"temperature\":0}" 2>/dev/null \
-    | python3 -c 'import sys,json;print(json.load(sys.stdin)["choices"][0]["message"]["content"].strip())' 2>/dev/null)"
+    -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with the single word: ok\"}],\"max_tokens\":100,\"temperature\":0}" 2>/dev/null \
+    | python3 -c 'import sys,json;m=json.load(sys.stdin)["choices"][0]["message"];print((m.get("content") or m.get("reasoning_content") or "").strip())' 2>/dev/null)"
   if [ -n "$out" ]; then ok "$label: completion works (said: ${out:0:40})"; else err "$label: completion failed"; fail=1; fi
 }
 

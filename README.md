@@ -104,26 +104,28 @@ GPU0 shared with the desktop) and the model's real architecture:
 
 - **The model is hybrid-recurrent, not dense.** `qwen35` interleaves Gated-DeltaNet/SSM layers
   with attention. Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
-  Two consequences drive the config: KV is ~1/4 of a dense 27B (so 4 concurrent slots at 32k each
+  Two consequences drive the config: KV is ~1/4 of a dense 27B (so 4 concurrent slots at 24k each
   is affordable), and the recurrent state tensors cannot be row/tensor-split.
 - **`-sm layer`** — the ONLY split mode that loads this arch across two GPUs. Row/tensor split
   fails on the SSM state tensors (the sibling recipe hit this). Layer (pipeline) split is forced.
-- **`-ts 9,12`** — VRAM-proportional layer split. GPU0 loses ~2 GB to the desktop, so layers are
+- **`-ts 10,12`** — VRAM-proportional layer split. GPU0 loses ~1.9 GB to the desktop, so layers are
   biased toward GPU1 to avoid OOMing GPU0 at load. Adjust if the desktop footprint changes.
 - **Qwen3.8-27B-OBLITERATED i1-Q4_K_S (~15.9 GB)** — abliterated to match the orchestrator's
   unhedged disposition. We use the **imatrix** (i1) repo, not the static one: activation-calibrated
   quants are higher quality per byte at the same size. i1-Q4_K_S is mradermacher's "optimal
-  size/speed/quality" pick and, crucially, is the quant that fits 4 concurrent slots x 32k on
-  2x 12 GB with a cushion. Measured KV (this arch has ~16 of 65 blocks as attention, kv_heads=4,
-  head_dim=256 -> ~32 KB/token at q8_0): 4x32k KV+state ~4.3 GB + weights 15.9 + overhead ~1.5
-  = ~21.7 GB against ~21.7 GB usable. Q4_K_M (16.9 GB) would overrun at 4x32k. Sub-4-bit degrades
+  size/speed/quality" pick and the quant that fits 4 concurrent slots x 24k on 2x 12 GB. Measured
+  KV (this arch has ~16 of 65 blocks as attention, kv_heads=4, head_dim=256 -> ~32 KB/token at
+  q8_0): weights 15.8 + KV(4x24k q8_0) ~3.3 + per-GPU compute buffers ~1.4 fits cleanly in the
+  ~21.9 GB usable. 4x32k left no margin and pipeline-parallel OOM'd at every split ratio, which is
+  why the per-slot context is 24576, not 32768. Q4_K_M (16.9 GB) would overrun; sub-4-bit degrades
   tool-call structure, so Q4_K_S is the floor. Source:
   `mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF`.
 - **`-ctk q8_0 -ctv q8_0`, matched** — tool-safe KV. `q4_0` KV is documented to substantially
   degrade tool calling; mixed K/V types cause a silent prefill collapse, so both must match.
 - **`-fa on`** — mandatory with quantized KV (context creation fails otherwise).
-- **`--parallel 4` at 32k/slot** — four concurrent workers; cheap here thanks to the small hybrid
-  KV. Total ctx = slots x per-slot; override with `WORKER_PARALLEL` / `WORKER_CTX_PER_SLOT`.
+- **`--parallel 4` at 24k/slot** — four concurrent workers (96k total context); cheap here thanks
+  to the small hybrid KV. Total ctx = slots x per-slot; override with `WORKER_PARALLEL` /
+  `WORKER_CTX_PER_SLOT`.
 - **`--cache-reuse 256`, `--no-context-shift`** — reuse KV across the growing histories of a
   multi-turn agent loop; hard-stop at the context limit rather than silently truncating the
   system prompt mid-task.
@@ -135,7 +137,7 @@ GPU0 shared with the desktop) and the model's real architecture:
 - **`reasoning_effort medium`, no vision projector** — medium avoids the tool-use loop at `low`
   and the pre-call stall at `high`; workers read code, not images.
 
-The `limit.context: 32768` on the `magus` provider in `opencode.json` matches the per-slot context.
+The `limit.context: 24576` on the `magus` provider in `opencode.json` matches the per-slot context.
 Keep them equal: if you change `CTX_PER_SLOT`, change the provider limit too.
 
 ## Bring up the orchestrator on fool (abliterated, 384k)

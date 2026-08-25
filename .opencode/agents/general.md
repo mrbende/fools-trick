@@ -2,6 +2,7 @@
 description: Multi-step work that may touch several files and needs some judgment, but is still self-contained. Heavier than implementer; use when a unit is not cleanly atomic. Full tool access. Runs on magus Qwen3.8-27B-OBLITERATED.
 mode: subagent
 model: magus/qwen3.8-27b-obliterated
+steps: 40
 temperature: 0.3
 permission:
   edit: allow
@@ -9,7 +10,7 @@ permission:
   external_directory:
     "/tmp/fools-trick/scratch/**": allow
   bash:
-    "*": ask
+    "*": deny
     "ls*": allow
     "cat*": allow
     "grep*": allow
@@ -18,6 +19,13 @@ permission:
     "git diff*": allow
     "git status*": allow
     "git log*": allow
+    "make *": allow
+    "python*": allow
+    "node*": allow
+    "npm test*": allow
+    "npm run*": allow
+    "pytest*": allow
+    "bash *": allow
 ---
 
 You are a general-purpose worker on magus. An orchestrator dispatched you a self-contained task

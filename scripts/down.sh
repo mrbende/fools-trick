@@ -12,8 +12,11 @@ down_worker() {
   say "stopping worker unit ($WORKER_UNIT)"
   systemctl --user stop "$WORKER_UNIT" 2>/dev/null || true
   systemctl --user reset-failed "$WORKER_UNIT" 2>/dev/null || true
-  # --collect usually cleans up; belt-and-suspenders for a stray process on the port.
-  pkill -x llama-server 2>/dev/null || true
+  # Scoped fallback for a stray process: kill only what holds OUR port, never a
+  # sibling llama-server on another port (a blanket pkill -x llama-server would).
+  if port_in_use "$WORKER_PORT"; then
+    fuser -k "${WORKER_PORT}/tcp" 2>/dev/null || true
+  fi
   ok "worker stopped"
 }
 

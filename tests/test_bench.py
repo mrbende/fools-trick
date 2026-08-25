@@ -85,6 +85,36 @@ class TestNumberExtraction(unittest.TestCase):
         self.assertIsNone(ev.last_number("no digits here"))
 
 
+class TestCodeEval(unittest.TestCase):
+    """code eval must extract runnable code from a reply and score by real execution."""
+
+    def test_extract_fenced(self):
+        reply = "Here you go:\n```python\ndef f(x):\n    return x + 1\n```\nDone."
+        code = ev.extract_code(reply, "f")
+        self.assertIn("def f(x):", code)
+        self.assertNotIn("Here you go", code)
+
+    def test_extract_unfenced_falls_back(self):
+        reply = "def f(x):\n    return x + 1\n"
+        self.assertIn("def f(x):", ev.extract_code(reply, "f"))
+
+    def test_run_test_passes_correct(self):
+        prog = "def add(a,b):\n    return a+b\n\ndef check(f):\n    assert f(2,3)==5\n\ncheck(add)\n"
+        ok, _ = ev.run_test(prog)
+        self.assertTrue(ok)
+
+    def test_run_test_fails_wrong(self):
+        prog = "def add(a,b):\n    return a-b\n\ndef check(f):\n    assert f(2,3)==5\n\ncheck(add)\n"
+        ok, _ = ev.run_test(prog)
+        self.assertFalse(ok)
+
+    def test_run_test_times_out(self):
+        prog = "while True:\n    pass\n"
+        ok, detail = ev.run_test(prog, timeout=2)
+        self.assertFalse(ok)
+        self.assertEqual(detail, "timeout")
+
+
 class TestSpeedRates(unittest.TestCase):
     """speed.rates must prefer llama.cpp native timings, fall back to wall-clock for vLLM."""
 

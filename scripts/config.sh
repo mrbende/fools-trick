@@ -22,11 +22,10 @@ LOCAL_WORKER_DIR="${LOCAL_WORKER_DIR:-${LOCAL_MODELS}/qwen3.8-27b-obliterated}"
 
 # --- worker model selection ---
 # imatrix (i1) quants: activation-calibrated, higher quality per byte than the static
-# GGUFs at the same size. i1-Q4_K_S is mradermacher's "optimal size/speed/quality" pick
-# and, at 15.9 GB, is the quant that fits 4 concurrent slots x 32k on 2x 12 GB with a
-# real cushion. Measured KV math (this arch: ~16 of 65 blocks attention, kv_heads=4,
-# head_dim=256 -> ~32 KB/token q8_0): 4x32k KV+state ~4.3 GB, +weights 15.9 +overhead
-# ~1.5 = ~21.7 GB against ~21.7 GB usable. Q4_K_M (16.9) would overrun 4x32k.
+# GGUFs at the same size. i1-Q4_K_S (15.8 GB) is mradermacher's "optimal size/speed/quality"
+# pick and the quant that fits 4 concurrent slots x 24k on 2x 12 GB (see serving shape below
+# for the KV math and why per-slot is 24k, not 32k). Q4_K_M (16.9) would overrun; sub-4-bit
+# degrades tool-call structure, so Q4_K_S is the floor.
 WORKER_REPO="${WORKER_REPO:-mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF}"
 WORKER_QUANT="${WORKER_QUANT:-i1-Q4_K_S}"
 WORKER_FILE="${WORKER_FILE:-Qwen3.8-27B-OBLITERATED.${WORKER_QUANT}.gguf}"
@@ -35,7 +34,7 @@ WORKER_FILE="${WORKER_FILE:-Qwen3.8-27B-OBLITERATED.${WORKER_QUANT}.gguf}"
 # Qwen3.8-27B is a HYBRID-recurrent arch (qwen35: Gated-DeltaNet/SSM + attention),
 # not dense. Consequences, all load-bearing:
 #   - Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
-#     So KV is ~1/4 of a dense 27B and 4 concurrent slots at 32k each is affordable.
+#     So KV is ~1/4 of a dense 27B and 4 concurrent slots at 24k each is affordable.
 #   - Row/tensor split cannot partition the recurrent state tensors -> they FAIL to
 #     load. --split-mode layer is the ONLY working mode across 2 GPUs.
 WORKER_PARALLEL="${WORKER_PARALLEL:-4}"        # concurrent slots
@@ -52,7 +51,11 @@ WORKER_SPLIT_MODE="${WORKER_SPLIT_MODE:-layer}"  # only mode that loads the hybr
 # With 24k/slot KV this fits cleanly without the OOM-retry that plagued 32k. If the
 # desktop footprint grows, shift toward 9,12; if GPU1 ever OOMs, shift toward 11,10.
 WORKER_TENSOR_SPLIT="${WORKER_TENSOR_SPLIT:-10,12}"
-WORKER_REASONING="${WORKER_REASONING:-medium}"
+# low, not medium: the abliterated Qwen over-reasons on simple worker tasks -- measured 20k+
+# output tokens on a "list the make targets" dispatch at medium, vs a correct answer in ~80-110
+# at low, with tool-calling fully intact (verified: read/write tool_calls emit correctly at low).
+# The orchestrator's low-collapse caveat is DeepSeek-specific; it does not apply to these workers.
+WORKER_REASONING="${WORKER_REASONING:-low}"
 # Qwen3.x "precise" sampling preset; stable for tool-calling. No repeat-penalty (corrupts JSON).
 WORKER_TEMP="${WORKER_TEMP:-0.6}"
 WORKER_TOP_P="${WORKER_TOP_P:-0.95}"

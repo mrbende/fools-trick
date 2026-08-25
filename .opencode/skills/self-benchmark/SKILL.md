@@ -41,11 +41,15 @@ opencode db --format json "SELECT agent, json_extract(model,'\$.providerID') AS 
 ## Reference numbers (a healthy system, measured)
 
 Use these to spot a regression, not as hard thresholds:
-- worker decode ~40-45 tok/s; ~94 tok/s aggregate at 4 concurrent; prefix cache ~92%.
+- worker decode: a single un-contended stream approaches ~32-38 tok/s, but under real 4-way
+  concurrency each slot drops to ~18-21 tok/s. Size timeouts against the CONTENDED rate: a worker
+  producing a large answer (say 8-11k output tokens) needs ~7-10 minutes, which is why the magus
+  provider timeout is `false` (unbounded) and runaway workers are bounded by `steps`, not wall time.
 - orchestrator prefill-bound: TTFT ~1.6s at 800 tok climbing to ~90s at 100k; cache ~97%; 0 preempt.
 - quality: gsm8k ~95% both tiers; ruler 95-100%; deep multi-hop 100% to 262k tokens.
-- e2e: fan-out task completes correctly with 2 workers on magus in a few hundred seconds (slow is
-  expected; the orchestrator is a deep single stream, not a fast API).
+- e2e: fan-out task completes correctly with 2 workers on magus in a few hundred seconds; a
+  substantive artifact-writing worker legitimately takes many minutes (slow is expected; the
+  workers are thorough, not fast, and the orchestrator is a deep single stream, not a fast API).
 
 ## Discipline
 

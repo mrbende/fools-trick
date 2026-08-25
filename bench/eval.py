@@ -9,12 +9,17 @@
           a question that requires chaining them -- so it tests reasoning OVER retrieved
           facts, not just single retrieval. This is how we test the orchestrator's
           384k window, which RULER's prebuilt 16k ceiling cannot reach.
+  code  : real coding. The model completes HumanEval+ functions and we EXECUTE the
+          official tests against its output -- the workers' actual job (writing runnable
+          code), scored by running it, not by string match.
 
-Scored by exact match. Requires the bench venv (datasets). HF token auto-read.
+Scored by exact match (gsm8k/ruler/deep) or by executing tests (code). Requires the
+bench venv (datasets). HF token auto-read.
 
   bench/eval.py gsm8k --url URL --model ID [--n 40]
   bench/eval.py ruler --url URL --model ID [--lengths 4096 8192 16384] [--n 20]
   bench/eval.py deep  --url URL --model ID [--lengths 32768 131072 262144 370000] [--n 5]
+  bench/eval.py code  --url URL --model ID [--n 20]
 """
 import argparse, json, random, re, sys, time, urllib.request
 import ui
@@ -221,11 +226,76 @@ def cmd_deep(a, out, md):
     tbl.render()
 
 
+def extract_code(text, entry_point):
+    """Pull runnable Python from a worker reply: prefer a fenced block, else the raw text.
+    Keep only up to the end of the target function's body when a fence is absent."""
+    m = re.search(r"```(?:python)?\s*\n(.*?)```", text, re.S)
+    code = m.group(1) if m else text
+    # If the model echoed prose after the code without a fence, cut at an obvious boundary.
+    return code
+
+
+def run_test(program, timeout=20):
+    """Execute a self-contained program (solution + test + harness call) in a subprocess.
+    Returns (passed, detail). Isolated: no network, its own tmp cwd."""
+    import subprocess, tempfile, os
+    with tempfile.TemporaryDirectory() as d:
+        p = os.path.join(d, "cand.py")
+        with open(p, "w") as f:
+            f.write(program)
+        try:
+            r = subprocess.run([sys.executable, p], cwd=d, capture_output=True,
+                               text=True, timeout=timeout)
+            return (r.returncode == 0, (r.stderr or r.stdout or "")[-200:])
+        except subprocess.TimeoutExpired:
+            return (False, "timeout")
+        except Exception as e:
+            return (False, str(e)[:200])
+
+
+def cmd_code(a, out, md):
+    """Real coding eval: the worker completes HumanEval+ functions; we EXECUTE the tests.
+    This is the workers' actual job -- producing correct, runnable code -- scored by running it,
+    not by string match."""
+    ds = load_dataset("evalplus/humanevalplus", split="test", streaming=True)
+    ui.phase(f"code  {a.model}  (n={a.n}, HumanEval+ -- worker writes code, we run the tests)")
+    if md: md.write(f"\n## code  {a.model} @ {a.url}  (n={a.n}, executed)\n\n")
+    correct = 0; total = 0
+    tbl = ui.Table("code", ["task", "pass", "wall s"], md,
+                   justify=["left", "center", "right"])
+    with ui.ItemProgress("code", a.n) as prog:
+        for row in ds:
+            if total >= a.n:
+                break
+            prompt = (f"Complete this Python function. Return ONLY the full function "
+                      f"definition in a single ```python code block, no prose:\n\n{row['prompt']}")
+            try:
+                d = chat(a.url, a.model, prompt, max_tokens=1536, timeout=a.timeout)
+                reply = answer_text(d); wall = d.get("_wall", 0)
+            except Exception as e:
+                reply = ""; wall = 0; ui.log.warning("code %s request failed: %s", row["task_id"], e)
+            code = extract_code(reply, row["entry_point"])
+            # Assemble a self-contained program: candidate + official test + call.
+            program = f"{code}\n\n{row['test']}\n\ncheck({row['entry_point']})\n"
+            ok, detail = run_test(program)
+            correct += ok; total += 1
+            emit({"test": "code", "task": row["task_id"], "pass": bool(ok),
+                  "wall_s": round(wall, 1), "detail": None if ok else detail}, out)
+            tbl.add([row["task_id"], "yes" if ok else "NO", f"{wall:.0f}"],
+                    style=(None if ok else "red"))
+            prog.update(total, bool(ok), 100 * correct / total)
+    acc = 100.0 * correct / total if total else 0.0
+    emit({"test": "code", "summary": True, "n": total, "correct": correct,
+          "accuracy_pct": round(acc, 1)}, out)
+    tbl.render()
+    ui.log.info("code: %d/%d = %.1f%%", correct, total, acc)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd", required=True)
-    defaults_n = {"gsm8k": 40, "ruler": 20, "deep": 5}
-    for name in ("gsm8k", "ruler", "deep"):
+    defaults_n = {"gsm8k": 40, "ruler": 20, "deep": 5, "code": 20}
+    for name in ("gsm8k", "ruler", "deep", "code"):
         s = sub.add_parser(name)
         s.add_argument("--url", required=True)
         s.add_argument("--model", required=True)
@@ -245,7 +315,7 @@ def main():
     md = open(a.md, "a") if getattr(a, "md", None) else None
     ui.log.info("eval %s  %s @ %s", a.cmd, a.model, a.url)
     if md: md.write(f"# eval {a.cmd}  {a.model} @ {a.url}  {time.strftime('%Y-%m-%dT%H:%M:%S')}\n")
-    {"gsm8k": cmd_gsm8k, "ruler": cmd_ruler, "deep": cmd_deep}[a.cmd](a, out, md)
+    {"gsm8k": cmd_gsm8k, "ruler": cmd_ruler, "deep": cmd_deep, "code": cmd_code}[a.cmd](a, out, md)
     if out: out.close()
     if md: md.close()
 
