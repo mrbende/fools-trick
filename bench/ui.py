@@ -9,13 +9,14 @@ Two separate concerns, each with the right tool:
 Result rows still go to the markdown FILE (machine-readable) in parallel with the
 rich table on screen. rich degrades cleanly when stdout is not a TTY.
 """
+# Stats helpers are defined in core; surfaced here too so ui is the single stats+display surface.
+from core import wilson, stat_str  # noqa: F401
+
 import logging
 from rich.console import Console
 from rich.table import Table as _RichTable
 from rich.logging import RichHandler
 
-# Stats live in core (the shared home); re-exported here so existing `ui.wilson` callers work.
-from core import wilson, stat_str  # noqa: F401
 
 console = Console()
 log = logging.getLogger("bench")

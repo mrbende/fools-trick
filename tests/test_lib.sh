@@ -68,6 +68,15 @@ fool_ctx="$(python3 -c "import json;print(json.load(open('$ROOT/opencode.json'))
 budget=$(( WINDOW_INPUT_TOKENS + DECODE_HEADROOM ))
 check "window+headroom < fool context" "yes" "$([ "$budget" -lt "${fool_ctx:-0}" ] && echo yes || echo no)"
 
+# Worker-side analog of the invariant above, for the SUBAGENT prune subsystem. A worker's live input
+# window (WORKER_INPUT_TOKENS, the prune trigger) plus its reserved decode budget
+# (WORKER_DECODE_HEADROOM) MUST fit inside a single worker slot (WORKER_CTX_PER_SLOT), or the worker
+# has no room to generate -- the same input/output competition the orchestrator faces, on a much
+# smaller window. <= not <: the budget is allowed to exactly fill the slot.
+echo "config sanity: worker input window + decode headroom fits in a worker slot"
+wbudget=$(( WORKER_INPUT_TOKENS + WORKER_DECODE_HEADROOM ))
+check "worker window+headroom <= per-slot ctx" "yes" "$([ "$wbudget" -le "$WORKER_CTX_PER_SLOT" ] && echo yes || echo no)"
+
 # Guards the doom-loop bug: if a model's output limit >= its context limit, opencode's
 # compaction headroom math (context - output) goes non-positive and it compacts the session
 # every turn, making workers amnesiac (re-read the same file forever). output MUST be < context.

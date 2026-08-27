@@ -113,13 +113,13 @@ class TestCodeEval(unittest.TestCase):
 
     def test_extract_fenced(self):
         reply = "Here you go:\n```python\ndef f(x):\n    return x + 1\n```\nDone."
-        code = ev.extract_code(reply, "f")
+        code = ev.extract_code(reply)
         self.assertIn("def f(x):", code)
         self.assertNotIn("Here you go", code)
 
     def test_extract_unfenced_falls_back(self):
         reply = "def f(x):\n    return x + 1\n"
-        self.assertIn("def f(x):", ev.extract_code(reply, "f"))
+        self.assertIn("def f(x):", ev.extract_code(reply))
 
     def test_run_test_passes_correct(self):
         prog = "def add(a,b):\n    return a+b\n\ndef check(f):\n    assert f(2,3)==5\n\ncheck(add)\n"

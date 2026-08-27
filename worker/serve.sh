@@ -14,7 +14,7 @@
 #                          arch on Ampere -> with -fa on it silently CPU-spills the attention op
 #                          (GPUs idle, throughput craters); q8_0 and f16 stay fully on GPU.
 #   -fa on               : mandatory with quantized KV (context creation fails otherwise)
-#   --parallel 4         : cheap here -- hybrid arch keeps KV small (~16 of 65 blocks)
+#   --parallel N         : WORKER_PARALLEL slots; cheap here -- hybrid arch keeps KV small (~16/65 blocks)
 #   --cache-reuse 256    : reuse KV across turns; big win for multi-turn agent loops
 #   --no-context-shift   : hard-stop at limit, not silent truncation of the system prompt
 #   no --spec-* flags    : MTP spec halves prefill on a layer split (bug #27428), CUDA

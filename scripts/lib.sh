@@ -118,10 +118,8 @@ worker_load_oom() {
     | grep -qiE "failed to allocate (CUDA[0-9]+ buffer|compute buffers)|ggml_gallocr_reserve"
 }
 
-# Fraction of a sampling window in which the worker's PROCESS is burning CPU hard (a proxy for
-# "a slot is actively computing"). Reads /proc/PID/stat utime+stime deltas. Returns cores busy
-# (float-ish integer: 100 == ~1 full core) as an integer of hundredths-of-a-core... we keep it
-# simple and return whole cores busy over the interval.
+# Whole CPU cores the worker burned over the interval (utime+stime delta / CLK_TCK / seconds).
+# High core count with idle GPUs is the signature of a KV/attention CPU spill.
 worker_cpu_cores() {
   local pid="$1" interval="${2:-2}" j0 j1 hz
   hz=$(getconf CLK_TCK 2>/dev/null || echo 100)
@@ -131,10 +129,8 @@ worker_cpu_cores() {
   awk -v d=$(( j1 - j0 )) -v hz="$hz" -v t="$interval" 'BEGIN{printf "%d", (d/hz)/t}'
 }
 
-# Sustained peak GPU compute utilization (max across both cards) over a window: the HIGH-WATER
-# mark across many quick samples. Used to decide if the GPU is doing real work. A single flicker
-# is not enough to clear the spill verdict -- we require sustained GPU activity, so we report the
-# median rather than the max, to reject transient blips.
+# Median GPU compute utilization (max across both cards) over many quick samples. Median, not max,
+# so a transient blip can't clear a spill verdict -- we want sustained GPU activity as the signal.
 gpu_util_median() {
   local samples="${1:-10}" vals=() u
   for _ in $(seq "$samples"); do

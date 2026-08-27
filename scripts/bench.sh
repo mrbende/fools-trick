@@ -132,9 +132,10 @@ speed_worker() {
   serving "$WORKER_URL" || { warn "worker not serving; skipping speed-worker"; return; }
   step "speed[worker] TTFT/prefill/decode/concurrency"
   # deepest depth must stay under the per-slot context or the server 400s; leave headroom.
+  # concurrency tops out at WORKER_PARALLEL (the real max-concurrency operating point).
   local deep=$(( WORKER_CTX_PER_SLOT - 4096 ))
   "$PY" "$SPEED" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" --engine llama \
-    --depths 512 8192 "$deep" --concurrency 1 2 4 \
+    --depths 512 8192 "$deep" --concurrency 1 2 "$WORKER_PARALLEL" \
     --out "$BENCH_DIR/speed-worker-$STAMP.jsonl" --md "$BENCH_DIR/speed-$STAMP.md" --logfile "$LOG"
 }
 speed_fool() {

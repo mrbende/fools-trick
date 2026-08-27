@@ -27,7 +27,7 @@ this operating point is not.
   fool: DeepSeek-V4-Flash   deep, slow, single stream, 384k ctx, abliterated (runtime projection)
    |    (orchestrator)      plans / decomposes / dispatches / synthesizes
    v  (LAN, 10G, never Tailscale)
-  magus: Qwen3.8-27B x3     fast, concurrent, 32k ctx/slot (131k total), abliterated (OBLITERATED)
+  magus: Qwen3.8-27B x3     fast, concurrent, 45k ctx/slot (135k total), abliterated (OBLITERATED)
         (workers)           execute self-contained units: search, edit, review
 ```
 
@@ -41,9 +41,9 @@ and `worker/serve.sh`:
 - `-sm layer` is the ONLY split that loads this hybrid-recurrent arch on 2 GPUs (row/tensor
   split can't partition the SSM state tensors).
 - `-ts 10,12` biases layers off GPU0 (it loses ~1.9GB to the desktop).
-- 32768/slot (131072 aggregate across 4 slots): the measured max that stays fully GPU-resident
-  for Q4_K_S + q8_0 KV under real 4-slot long-context load (llama-batched-bench, ~66 t/s agg
-  ~1720 t/s all-GPU); 40960/slot spills the attention op to CPU.
+- 45056/slot (135168 aggregate across 3 slots): the measured max that stays fully GPU-resident
+  for Q4_K_S + q8_0 KV. At 4 slots the ceiling was 32768/slot (40960 spilled the attention op to
+  CPU); dropping to 3 slots frees the KV headroom for 45056/slot.
 - `q8_0` KV, matched K/V: the quantized KV floor with a working CUDA flash-attn kernel for this
   hybrid arch. q5_1 has NO CUDA FA kernel here -- with `-fa on` it silently falls back to CPU
   (GPUs idle, cores peg, throughput craters) even with free VRAM. q8_0/f16 stay on GPU; mixed
@@ -68,7 +68,7 @@ Verified serving facts (live, this session):
 
 ### Layer 2 -- Ops (scripts/, worker/)
 
-Production-minded shell, ~1000 lines. Idempotent bootstrap; check-first weight provisioning
+Production-minded shell. Idempotent bootstrap; check-first weight provisioning
 (NAS-canonical -> local NVMe fast-copy); git-sync gating that refuses to serve fool from a
 dirty/divergent tree; systemd `--user` transient unit for the worker with journald ownership;
 scoped teardown (`fuser -k` on our port, never a blanket pkill). `make` is the operator surface:
@@ -76,7 +76,7 @@ scoped teardown (`fuser -k` on our port, never a blanket pkill). `make` is the o
 
 ### Layer 3 -- Orchestration strategy (prompts/orchestrator.md, AGENTS.md, .opencode/)
 
-The intellectual core. The orchestrator prompt (172 lines) says: you are one deep slow stream,
+The intellectual core. The orchestrator prompt says: you are one deep slow stream,
 delegate aggressively via the Task tool, fan out wide in one turn, every dispatch is a complete
 four-part work order (GOAL/INPUTS/OUTPUT/BOUNDARIES), synthesize don't concatenate, write large
 worker output to shared scratch and return only a reference, verify against real signals before
@@ -97,7 +97,7 @@ destructive git/push/terraform/publish via `tool.execute.before` throw) and the 
 (deterministic evidence tracking on code edits). `.opencode/plugin/web.js` -- browser tools over
 the Camofox server. `.opencode/plugin/memory.js` -- the sliding-window + recall layer (Layer 5).
 
-### Layer 4 -- Benchmark harness (bench/, ~1440 lines)
+### Layer 4 -- Benchmark harness (bench/)
 
 The measurement instrument. Verified working:
 - `capability.py` -- thin wrapper over EleutherAI lm-evaluation-harness (the field standard, so
@@ -154,21 +154,23 @@ client. The knowledge-graph tier is deliberately deferred. Design: `docs/memory-
 
 ## The honest gaps (itemized, prioritized)
 
-Built and verified: capability (lm-eval), e2e delegation, speed, compare, ops, orchestration.
-Not yet built:
+Built and wired: capability (lm-eval), e2e delegation, speed, compare, ops, orchestration, safety
+(`safety.py`: AdvBench/HarmBench/JBB/XSTest + StrongREJECT rubric on the orchestrator), long-context
+agentic delegation (`longctx.py`), the deep-needle test (`eval.py deep`, 32k-370k, exercising the
+384k window), and the memory A/B (`memory.py`: sliding-window recall vs compaction, LongMemEval/DMR
+grounded). The subagent in-context prune subsystem is covered by unit tests (`test_memory.mjs`).
+
+Not yet built / open:
 1. **BFCL** tool-calling harness -- path fully scoped (bfcl-eval, `--skip-server-setup`,
-   `REMOTE_OPENAI_BASE_URL`, Qwen3-FC handler, `--run-ids` subset). Ready to build.
-2. **Safety harness** -- AdvBench/HarmBench/JBB/XSTest + StrongREJECT rubric (on the orchestrator;
-   priestess has no GPU for the HarmBench classifier). The abliteration research centerpiece.
-3. **Long-context agentic eval** -- delegation at 100k+ orchestrator context. Genuinely novel;
-   nobody has this. Needs design.
-4. **Migrate the deep-needle test** (32k-370k, the only thing exercising the 384k window) into
-   the new harness structure.
-5. **Wire it together** -- bench.sh node-routing, delete hand-rolled evals, adopt zeta's output
-   patterns (per-run dir, manifest, summary.json+md, median+p95 latency).
-6. **SWE-bench / LiveCodeBench** (heavy, real agentic coding) -- later. The **memory eval** gap is
-   now addressed: `bench/memory.py` A/Bs sliding-window recall vs compaction (LongMemEval/DMR-
-   grounded), though it still needs a live end-to-end run to confirm the plugin fires as designed.
+   `REMOTE_OPENAI_BASE_URL`, Qwen3-FC handler, `--run-ids` subset). Ready to build; would replace
+   the hand-rolled `eval.py tools` cases.
+2. **Live end-to-end runs of the newer harnesses.** safety, longctx, and the memory A/B are wired
+   but need a full live run on both nodes to confirm the numbers (and, for memory, that the plugin
+   fires as designed under a real long session).
+3. **Subagent prune, live.** The prune subsystem is unit-tested but has no bench arm proving a
+   worker actually runs past its input budget without going amnesiac. `memory.py` scopes the
+   orchestrator sliding window only.
+4. **SWE-bench / LiveCodeBench** (heavy, real agentic coding) -- later.
 
 ## The three things this system measures, which are genuinely different
 
@@ -180,6 +182,7 @@ The reason a single uniform suite doesn't fit: the three tiers answer different 
 
 ## State of the tree
 
-47 files tracked, ~17 changed/untracked (this session's work: capability.py, compare.py,
-report.py, compare.sh untracked; eval.py/bench.sh/config.sh/opencode.json/agents/tests modified).
-Everything uncommitted -- a clean consolidation/commit point.
+The bench harness (`bench/`), ops (`scripts/`, `worker/`), orchestration (`prompts/`, `.opencode/`),
+and the memory subsystem (`.opencode/memory/`, `.opencode/plugin/memory.js`) are all in tree with
+unit coverage green (`make test-unit`). Worker serving is 3 slots x 45056. Treat this doc as a map,
+not a ledger; `git status` and `make test` are the ground truth.

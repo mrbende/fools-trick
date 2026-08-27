@@ -35,7 +35,7 @@ now carries only machine-wide preferences; providers live in the projects that u
 | Provider (project) | Endpoint | Model | Context | Role |
 |---|---|---|---|---|
 | `fool-ds4` | `http://fool:8888/v1` | `deepseek-v4-flash-0731` (abliterated, EXL3) | 384000 | orchestrator (deep, slow) |
-| `magus` | `http://127.0.0.1:8898/v1` | `qwen3.8-27b-obliterated` (i1-Q4_K_S) | 32768/slot, 131072 total | workers (fast, concurrent) |
+| `magus` | `http://127.0.0.1:8898/v1` | `qwen3.8-27b-obliterated` (i1-Q4_K_S) | 45056/slot, 135168 total | workers (fast, concurrent) |
 
 `fool` resolves via `/etc/hosts` to its wired-LAN address, NEVER a VPN overlay. The
 worker is local on magus. Both `apiKey` are `dummy` (local servers, no auth). Both provider
@@ -105,7 +105,7 @@ The memory layer (`docs/memory-design.md`) adds three integration seams:
   `messages.transform` hook owns eviction, persisting evicted turns as episodes. A test guards the
   decode-headroom invariant: `WINDOW_INPUT_TOKENS + DECODE_HEADROOM < orchestrator context`, so
   the input window can never starve the output decode budget.
-- **The plugin binds every agent, including subagents.** `memory_search`/`memory_write` are
+- **The plugin binds every agent, including subagents.** `memory_search`/`memory_write`/`note` are
   registered via the plugin `tool` hook, so both the orchestrator and the workers can read and
   write the shared store; each episode is attributed by `sessionID` and `agent` from the tool
   context, and keyed by the conversation's root thread so recall is scoped per conversation.

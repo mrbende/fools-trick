@@ -53,8 +53,8 @@ def build_probes(seed):
     rng = random.Random(seed)
     token = f"DEPLOY-{rng.randint(10000,99999)}"
     kv_old, kv_new = "q5_1", "q8_0"                   # the update: KV choice changed mid-session
-    ctx = f"{rng.choice([32768, 40960, 24576])}"
-    slots = "4"
+    ctx = f"{rng.choice([45056, 40960, 24576])}"
+    slots = "3"
     plants = [
         f"For this session, remember: our deploy token is {token}. Acknowledge and continue.",
         f"Remember we initially set the worker KV cache type to {kv_old}. Acknowledge.",
@@ -92,13 +92,13 @@ def build_agentic(project):
         ("Dispatch a subagent to read scripts/config.sh and report the exact worker serve PORT. "
          "Just have it find and state the port number.", None, None),
         ("Dispatch a subagent to read the .opencode/plugin/memory.js file and report HOW MANY "
-         "memory tools it registers (memory_write, memory_search, etc). State the count.", None, None),
+         "tools it registers under its tool: block. State the count.", None, None),
     ]
     recall = [
         ("agentic-recall",
          "Earlier a subagent found the worker's serve port and the number of memory tools the "
          "plugin registers. State both, comma-separated (port, then tool count).",
-         "8898 and 2", False),
+         "8898 and 3", False),
     ]
     return discover, recall
 

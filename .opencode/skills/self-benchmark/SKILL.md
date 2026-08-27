@@ -13,7 +13,7 @@ self-judgment: a run that "looks fine" but shows 0 subagents on a fan-out task d
 
 | Question | Command | What proves it |
 |---|---|---|
-| Is the config/wiring sound? | `make test-unit` | 23 unit tests (bench parsers + lib), no servers needed |
+| Is the config/wiring sound? | `make test-unit` | the bench-parser + shell-lib unit suite, no servers needed |
 | Is everything wired + live? | `make test` | unit + config + a live worker round-trip |
 | Are both servers healthy? | `make health` | real completions on fool + magus + opencode round-trip |
 | Did the orchestrator delegate? | `make bench-e2e` | runs real tasks, PROVES subagents via the opencode DB |
@@ -41,7 +41,7 @@ opencode db --format json "SELECT agent, json_extract(model,'\$.providerID') AS 
 ## Reference numbers (a healthy system, measured)
 
 Use these to spot a regression, not as hard thresholds:
-- worker decode: a single un-contended stream approaches ~32-38 tok/s, but under real 4-way
+- worker decode: a single un-contended stream approaches ~32-38 tok/s, but under real 3-way
   concurrency each slot drops to ~18-21 tok/s. Size timeouts against the CONTENDED rate: a worker
   producing a large answer (say 8-11k output tokens) needs ~7-10 minutes, which is why the magus
   provider timeout is `false` (unbounded) and runaway workers are bounded by `steps`, not wall time.

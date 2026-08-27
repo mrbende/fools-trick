@@ -30,7 +30,7 @@ roles, each pinned to the machine whose bottleneck it fits:
   Spark, at `http://fool:8888/v1` with a **384k-token** window. One deep, capable, single stream.
   It plans, decomposes, dispatches, and synthesizes. This is the `build`/`plan` agent.
 - **Workers** — Qwen3.8-27B-OBLITERATED (i1-Q4_K_S) on **magus** (2x RTX 3080 Ti) at
-  `http://127.0.0.1:8898/v1`. Fast, concurrent (4 slots), 32k context each. These are the
+  `http://127.0.0.1:8898/v1`. Fast, concurrent (3 slots), 45k context each. These are the
   `explore`, `general`, and `reviewer` subagents the orchestrator fans out in parallel.
 - **Memory** — Redis (hot, shared, ephemeral) + SQLite (durable, FTS5) on **magus**, so a session
   slides a live window over a persistent store instead of summarizing-and-dropping at compaction.
@@ -109,7 +109,7 @@ The system's *effective* context is far larger than 384k, and that is the point 
 tiers:
 
 - **Fan-out.** The orchestrator does not fill its window with raw files; it dispatches workers
-  (32k each, faster, concurrent), each of which reads a slice and returns a compressed digest.
+  (45k each, faster, concurrent), each of which reads a slice and returns a compressed digest.
   Material ingested scales with the number of workers while the orchestrator holds only summaries.
 - **Sliding memory.** For a single long-running session, the orchestrator slides its window over a
   persistent store rather than compacting (see Memory). It never has millions of tokens *in*
@@ -127,7 +127,7 @@ architecture. The load-bearing choices, all landed by measurement:
 
 - **The model is hybrid-recurrent, not dense.** `qwen35` interleaves Gated-DeltaNet/SSM layers
   with attention. Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
-  Consequences: KV is ~1/4 of a dense 27B (4 concurrent slots at 32k each is affordable), and the
+  Consequences: KV is ~1/4 of a dense 27B (3 concurrent slots at 45k each is affordable), and the
   recurrent state tensors cannot be row/tensor-split.
 - **`-sm layer`** — the ONLY split mode that loads this arch across two GPUs. Row/tensor split
   fails on the SSM state tensors. **`-ts 10,12`** biases layers toward GPU1 since GPU0 loses
@@ -141,9 +141,9 @@ architecture. The load-bearing choices, all landed by measurement:
   back to CPU for the attention op — GPUs idle, cores peg, throughput craters, even with GBs of
   VRAM free. This was the root-cause bug of a long debugging session; a KV-type guard now prevents
   regressing it. K and V must match (mixed types collapse prefill). Do NOT set q5_1/q4_0.
-- **`--parallel 4` at 32768/slot** (131072 total) — the MEASURED max that stays fully GPU-resident
-  under real 4-slot long-context load (llama-batched-bench: ~66 t/s aggregate, ~1720 t/s prefill,
-  all on GPU). 40960/slot spills to CPU for Q4_K_S. The `magus` provider's `limit.context: 32768`
+- **`--parallel 3` at 45056/slot** (135168 total) — the MEASURED max that stays fully GPU-resident
+  under real 3-slot long-context load (llama-batched-bench: ~66 t/s aggregate, ~1720 t/s prefill,
+  all on GPU). Larger shapes spill to CPU for Q4_K_S. The `magus` provider's `limit.context: 45056`
   must equal `WORKER_CTX_PER_SLOT` — a test guards the parity.
 - **`--cache-reuse 256`, `--no-context-shift`** — reuse KV across a multi-turn loop; hard-stop at
   the limit rather than silently truncating the system prompt.
@@ -224,6 +224,46 @@ manifest for reproducibility.
 
 A VRAM-spill guard runs before worker suites: if the served config spills inference to CPU, the
 run records it as an invalidated result and moves on rather than grinding CPU-bound.
+
+### Preliminary speed
+
+Single measured run on the reference rig (`make bench-speed`), indicative not statistical. The
+shape is the point: the workers are fast and scale with concurrency, the orchestrator is
+deep-but-slow, and end-to-end wall-clock tracks the workers because that is where the volume runs.
+
+**Worker** — Qwen3.8-27B i1-Q4_K_S, 2x RTX 3080 Ti:
+
+| context | TTFT | prefill | decode |
+|--------:|-----:|--------:|-------:|
+| 512     | 0.5s | ~1000 t/s | 44 t/s |
+| 8k      | 3.3s | ~2000 t/s | 43 t/s |
+| 28k     | 11s  | ~2000 t/s | 39 t/s |
+
+| concurrency | 1 | 2 | 3 |
+|---|--:|--:|--:|
+| aggregate decode | 39 t/s | 72 t/s | **91 t/s** |
+
+**Orchestrator** — DeepSeek-V4-Flash-0731, one DGX Spark (single-stream, bandwidth-bound):
+
+| context | TTFT | prefill | decode |
+|--------:|-----:|--------:|-------:|
+| 1k      | 0.9s | ~900 t/s  | 24 t/s |
+| 16k     | 11s  | ~1140 t/s | 28 t/s |
+| 65k     | 44s  | ~1110 t/s | 29 t/s |
+| 131k    | 92s  | ~1070 t/s | 30 t/s |
+
+TTFT climbing with depth is the single-Spark tax — the reason deep context is fanned out to the
+workers rather than held whole.
+
+**End-to-end** (`make bench-e2e`, real opencode fan-out tasks):
+
+| task | subagents | wall |
+|---|--:|--:|
+| single fact lookup | 0 | 9s |
+| parallel fan-out review | 2 | 86s |
+| heavy multi-agent audit | 2 | 6m |
+
+Prefix caching reused ~92% (worker) / ~98% (orchestrator) of a warm shared prompt.
 
 ## Why the prompts lean on the ablation
 

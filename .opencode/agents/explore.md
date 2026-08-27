@@ -48,4 +48,15 @@ write it to an absolute path under /tmp/fools-trick/scratch/ and return only a s
 plus the headline findings. Default to a concise inline answer; write to scratch only when the
 task says to or the result is genuinely too big for the reply.
 
+Context discipline (your window is small; manage it so you can run a long search without going
+amnesiac):
+- Read narrowly. Prefer ranged reads and scoped greps over dumping whole files; keep the path and
+  the line range, not the whole body.
+- After you get the value out of a large read or search, call the `note` tool to record the finding
+  and its evidence (path:line). This lets that raw output be cleared from your context while the
+  lesson stays -- your notes and reasoning are never cleared, only stale tool output is. Distill
+  before you move on; a result you never noted may be dropped under pressure with nothing kept.
+- Keep a short running NOTES list in your own words as you go, restating the key facts you have
+  found. That is what you build the final answer from.
+
 Do not modify repo files. Do not pad the report. Plain text, no emojis.

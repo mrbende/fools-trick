@@ -11,7 +11,7 @@ import { open, search, recent } from "./store.js"
 
 const DB = process.env.MEMORY_DB || `${process.env.HOME}/.local/share/fools-trick/memory.db`
 const [, , cmd, thread, ...rest] = process.argv
-open(DB)
+await open(DB)
 
 if (cmd === "count") {
   console.log(recent({ thread, k: 100000 }).length)

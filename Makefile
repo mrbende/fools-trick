@@ -5,6 +5,14 @@
 SHELL := /bin/bash
 S := ./scripts
 
+# Skills are allowlist-only in this repo: load ONLY .opencode/skills, never the
+# global (~/.config/opencode/skills) or external (~/.claude, ~/.agents) scans.
+# This keeps worker requests inside the 32k slot; the global catalog alone
+# overran it. Exported so every opencode invocation from the harness matches
+# the interactive sessions (which get the same vars via .envrc/direnv).
+export OPENCODE_DISABLE_EXTERNAL_SKILLS := 1
+export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS := 1
+
 .DEFAULT_GOAL := help
 
 .PHONY: help

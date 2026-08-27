@@ -99,7 +99,7 @@ def run(node, url, model, tokenizer, tasks, n, seed, out_dir, concurrency):
     # (observed: DeepSeek gsm8k=0 because reasoning ate the 2048 budget before emitting content).
     # Give the orchestrator (reasoning) a large window; the worker is fine at the default.
     max_length = 40960 if node == "fool" else 8192
-    # Concurrency is node-aware: the worker serves 4 slots, but fool is a SINGLE-STREAM
+    # Concurrency is node-aware: the worker serves multiple slots, but fool is a SINGLE-STREAM
     # bandwidth-bound orchestrator. Hitting fool with num_concurrent=4 causes per-request
     # TimeoutError / null-content (measured: 2 of 5 gsm8k answers dropped -> strict-match 0.40 vs
     # flexible 0.80, a pure artifact). Force fool to 1 so its capability number is real.

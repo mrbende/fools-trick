@@ -1,25 +1,27 @@
-// Durable episode store: SQLite (source of truth) with FTS5 full-text recall.
-// An EPISODE is one raw, non-lossy unit of conversation memory (a message/turn or an
-// explicit memory_write), keyed by conversation THREAD so recall is scoped per conversation.
-// Node 25 ships node:sqlite; no external dependency.
-//
-// Schema:
-//   episodes(id, thread, session, agent, role, content, ts)   -- raw episodes, thread-scoped
-//   episodes_fts                                               -- FTS5 mirror over content (BM25)
-// thread   = the conversation's root session id (stable across a conversation's child sessions)
-// session  = the specific opencode sessionID that wrote it (orchestrator or a subagent)
-// agent    = which agent wrote it (build/explore/general/reviewer/...)
+// Durable episode store: SQLite (source of truth) + FTS5 recall. An episode is one raw, non-lossy
+// unit of memory (a turn or a memory_write), keyed by thread (the conversation's root session id)
+// so recall is scoped per conversation. No external dep.
 
-import { DatabaseSync } from "node:sqlite"
 import { mkdirSync } from "node:fs"
 import { dirname } from "node:path"
 
+// opencode's runtime is Bun (bun:sqlite); tests run under Node (node:sqlite). Same
+// prepare/run/all/exec/close surface, so only the constructor differs.
+async function openDatabase(path) {
+  if (typeof globalThis.Bun !== "undefined") {
+    const { Database } = await import("bun:sqlite")
+    return new Database(path, { create: true })
+  }
+  const { DatabaseSync } = await import("node:sqlite")
+  return new DatabaseSync(path)
+}
+
 let db = null
 
-export function open(path) {
+export async function open(path) {
   if (db) return db
   mkdirSync(dirname(path), { recursive: true })
-  db = new DatabaseSync(path)
+  db = await openDatabase(path)
   db.exec("PRAGMA journal_mode = WAL;")           // concurrent readers + one writer
   db.exec("PRAGMA synchronous = NORMAL;")
   db.exec(`

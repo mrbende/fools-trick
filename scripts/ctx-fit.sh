@@ -29,9 +29,9 @@ WORKER_FILE="Qwen3.8-27B-OBLITERATED.${WORKER_QUANT}.gguf"
 
 # Candidate ladder, largest first. A smaller quant frees VRAM for more context, so start high.
 CANDIDATES=("$@")
-[ "${#CANDIDATES[@]}" -eq 0 ] && CANDIDATES=(40960 32768 28672 24576 20480 16384)
+[ "${#CANDIDATES[@]}" -eq 0 ] && CANDIDATES=(49152 45056 40960 32768 28672 24576 20480 16384)
 
-slots="${WORKER_PARALLEL:-4}"
+slots="$WORKER_PARALLEL"
 say "ctx-fit sweep: slots=$slots, kv=$WORKER_KV, quant=$WORKER_QUANT, ts=$WORKER_TENSOR_SPLIT"
 say "candidates (tok/slot): ${CANDIDATES[*]}"
 

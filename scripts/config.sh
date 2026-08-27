@@ -36,8 +36,8 @@ LOCAL_WORKER_DIR="${LOCAL_WORKER_DIR:-${LOCAL_MODELS}/qwen3.8-27b-obliterated}"
 # --- worker model selection ---
 # imatrix (i1) quants: activation-calibrated, higher quality per byte than the static
 # GGUFs at the same size. i1-Q4_K_S (14.74 GB GGUF) is mradermacher's "optimal size/speed/quality"
-# pick, chosen because it holds tool-calling (87.5%, 7/8) and code (93.3%) while fitting 4
-# concurrent slots x 32768 with q8_0 KV on 2x 12 GB (see serving shape below for the KV math).
+# pick, chosen because it holds tool-calling (87.5%, 7/8) and code (93.3%) while fitting 3
+# concurrent slots x 45056 with q8_0 KV on 2x 12 GB (see serving shape below for the KV math).
 # Smaller quants were rejected: IQ3_M drops tool-calling to 75%, Q3_K_M drops code to 80%.
 # Q4_K_M (16.9) would overrun; sub-4-bit degrades tool-call structure, so Q4_K_S is the floor.
 WORKER_REPO="${WORKER_REPO:-mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF}"
@@ -58,18 +58,17 @@ WORKER_BASE_PATH="${WORKER_BASE_PATH:-$LOCAL_MODELS/qwen3.8-27b/Qwen3.8-27B-IQ4_
 # Qwen3.8-27B is a HYBRID-recurrent arch (qwen35: Gated-DeltaNet/SSM + attention),
 # not dense. Consequences, all load-bearing:
 #   - Only ~16 of 65 blocks carry a KV cache; the rest hold a tiny recurrent state.
-#     So KV is ~1/4 of a dense 27B and 4 concurrent slots at high context is affordable.
+#     So KV is ~1/4 of a dense 27B and several concurrent slots at high context is affordable.
 #   - Row/tensor split cannot partition the recurrent state tensors -> they FAIL to
 #     load. --split-mode layer is the ONLY working mode across 2 GPUs.
-WORKER_PARALLEL="${WORKER_PARALLEL:-4}"        # concurrent slots
-# 32768/slot (131072 total across 4 slots) is the MEASURED max that stays fully GPU-resident for
-# Q4_K_S weights + q8_0 KV under real long-context load on all 4 slots. Verified with
-# llama-batched-bench (npl=4): 32768/slot decodes ~66 t/s aggregate ~1720 t/s, all on GPU; 40960
-# does NOT fit for Q4_K_S (KV overflow spills the attention op to CPU). Smaller quants reach more
-# context (Q3_K_M 40960, IQ3_M 49152+) but IQ3_M drops tool-calling to 75% and Q3_K_M drops code
-# to 80%; Q4_K_S holds both (tools 87.5%, code 93.3%) -- context is not worth the quality loss.
-# Frontier is weight-size-bound: every ~2 GB of weights freed buys ~8k more ctx/slot.
-WORKER_CTX_PER_SLOT="${WORKER_CTX_PER_SLOT:-32768}"
+WORKER_PARALLEL="${WORKER_PARALLEL:-3}"        # concurrent slots
+# Slot count trades against per-slot context for a fixed KV budget. At 4 slots the resident ceiling
+# for Q4_K_S + q8_0 KV was 32768/slot (40960 spilled the attention op to CPU); dropping to 3 slots
+# frees that KV headroom, so 45056/slot now stays fully GPU-resident (total 135168 vs the old
+# 131072). Smaller quants reach more context (Q3_K_M 40960, IQ3_M 49152+) but IQ3_M drops
+# tool-calling to 75% and Q3_K_M drops code to 80%; Q4_K_S holds both -- context is not worth the
+# quality loss. Rule of thumb: every ~2 GB of weights freed buys ~8k more ctx/slot.
+WORKER_CTX_PER_SLOT="${WORKER_CTX_PER_SLOT:-45056}"
 # q8_0 KV: the ONLY quantized KV with a working CUDA flash-attention kernel for this hybrid
 # (qwen35 / GatedDeltaNet) arch on Ampere. q5_1 has NO CUDA FA kernel here: with -fa on it
 # silently falls back to CPU for the attention op -- GPUs go idle, ~30 cores peg, throughput
@@ -80,7 +79,7 @@ WORKER_KV="${WORKER_KV:-q8_0}"
 WORKER_SPLIT_MODE="${WORKER_SPLIT_MODE:-layer}"  # only mode that loads the hybrid arch on 2 GPUs
 # Layer split. GPU0 loses ~1.9 GB to the desktop, so give GPU1 slightly more of the
 # model to keep GPU0's free memory (which also holds a compute buffer) comfortable.
-# With 32768/slot at q8_0 KV this fits cleanly (fully GPU-resident on all 4 slots). If the
+# With 45056/slot at q8_0 KV this fits cleanly (fully GPU-resident on all 3 slots). If the
 # desktop footprint grows, shift toward 9,12; if GPU1 ever OOMs, shift toward 11,10.
 WORKER_TENSOR_SPLIT="${WORKER_TENSOR_SPLIT:-10,12}"
 # low, not medium: the abliterated Qwen over-reasons on simple worker tasks -- measured 20k+
@@ -101,30 +100,29 @@ NAS_MIN_FREE_GIB="${NAS_MIN_FREE_GIB:-120}"    # DeepSeek weights ~107G if fool 
 # --- shared scratch (RAM-backed, wiped on reboot) ---
 SCRATCH_DIR="${SCRATCH_DIR:-/tmp/fools-trick/scratch}"
 
-# --- memory: sliding window + persistent recall (see docs/memory-design.md) ---
-# Two jobs: (1) slide a live input window instead of compacting (lossy summarize-drop),
-# (2) persist everything that slides out for recall. Two stores: Redis (hot, shared, ephemeral
-# short-term + write-queue for the swarm) and SQLite (durable episode store, source of truth).
+# --- memory: sliding window + persistent recall (design: docs/memory-design.md) ---
 MEMORY_ENABLED="${MEMORY_ENABLED:-1}"
-# Redis runs as a make-up-managed Docker container (redis:7-alpine, already local). Ephemeral by
-# design -- short-term memory; make down can drop it. SQLite is what persists.
+# Redis: hot short-term + swarm write-queue, ephemeral (a make-up-managed container, down can drop
+# it). SQLite: the durable episode store, NOT in /tmp so it survives reboot.
 REDIS_CONTAINER="${REDIS_CONTAINER:-fools-redis}"
 REDIS_PORT="${REDIS_PORT:-6379}"
 REDIS_URL="${REDIS_URL:-redis://127.0.0.1:${REDIS_PORT}}"
 REDIS_IMAGE="${REDIS_IMAGE:-redis:7-alpine}"
-# Durable episode store. NOT in /tmp -- must survive reboot. Episodes are keyed by conversation
-# thread (opencode sessionID + its root) so recall is correctly scoped per conversation.
 MEMORY_DB="${MEMORY_DB:-$HOME/.local/share/fools-trick/memory.db}"
-# Sliding-window budget for the orchestrator (384k context). Hold this many INPUT tokens live and
-# slide; reserve DECODE_HEADROOM for output. Invariant: WINDOW_INPUT_TOKENS + DECODE_HEADROOM well
-# under 384k, so decode always has room (input and output compete for the same window).
-# DECODE_HEADROOM must be >= the orchestrator's opencode limit.output (65536), so the window always
-# reserves at least what opencode will let the model generate -- long-form coding answers plus the
-# reasoning tokens DeepSeek burns before the visible answer. 160k input + 96k reserve = 256k, still
-# a wide margin under 384k, and the extra reserve costs nothing until a response actually uses it.
+# Orchestrator sliding-window budget. Input and output compete for the 384k window, so hold this
+# many input tokens live and reserve the rest for decode. Invariant (test-guarded): WINDOW_INPUT +
+# DECODE_HEADROOM < 384k, and DECODE_HEADROOM >= opencode limit.output (65536) so decode never
+# starves.
 WINDOW_INPUT_TOKENS="${WINDOW_INPUT_TOKENS:-160000}"
 DECODE_HEADROOM="${DECODE_HEADROOM:-96000}"
 MEMORY_RECENT_TTL="${MEMORY_RECENT_TTL:-3600}"   # Redis recent-cache expiry (seconds)
+# Subagent context budget (a separate subsystem; workers prune tool results in-context, they do not
+# persist). Same invariant on the small worker slot: WORKER_INPUT + WORKER_DECODE_HEADROOM <=
+# WORKER_CTX_PER_SLOT (test-guarded). Headroom is generous because the abliterated worker over-reasons
+# (WORKER_REASONING=low curbs it) and must clear the 12288 opencode output floor.
+WORKER_INPUT_TOKENS="${WORKER_INPUT_TOKENS:-26000}"
+WORKER_DECODE_HEADROOM="${WORKER_DECODE_HEADROOM:-16000}"
+WORKER_KEEP_RECENT="${WORKER_KEEP_RECENT:-3}"    # most-recent raw tool results never pruned
 
 # --- spark serving recipe (submodule here; a matching clone runs on fool) ---
 SPARK_DIR_LOCAL="${SPARK_DIR_LOCAL:-$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)/spark}"

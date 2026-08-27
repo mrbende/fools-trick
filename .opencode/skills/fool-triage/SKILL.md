@@ -7,7 +7,7 @@ description: Diagnose the fools-trick two-node system when delegation or a worke
 
 How to diagnose the fools-trick distributed system when something is wrong. This system is
 two nodes: the DeepSeek orchestrator on fool (`http://fool:8888`, slow deep stream) and Qwen
-workers on magus (`http://127.0.0.1:8898`, a systemd unit `fools-worker`, 4 concurrent slots).
+workers on magus (`http://127.0.0.1:8898`, a systemd unit `fools-worker`, 3 concurrent slots).
 Most "it's broken" reports are actually "it's slow" -- rule that out first.
 
 ## First: slow vs. broken
@@ -60,12 +60,12 @@ Read it:
   produced thousands of output tokens, yet the task reports "operation timed out" and its scratch
   artifact was never written -- and the worker journald shows `srv stop: cancel task`. That is
   opencode cancelling the HTTP request mid-generation. The magus provider `timeout` must be `false`
-  (unbounded); under 4-way contention a worker decodes at ~18-21 tok/s, so any answer over ~5-6k
+  (unbounded); under 3-way contention a worker decodes at ~18-21 tok/s, so any answer over ~5-6k
   output tokens exceeds a 300s cap. Runaway workers are bounded by `steps`, not wall time.
 - **Worker OOM / degraded load.** If the worker won't hold context or 400s on large prompts,
   check its load log for `cudaMalloc failed` / `retrying without pipeline parallelism`. The fix is
-  fewer/smaller slots (`WORKER_CTX_PER_SLOT`, `WORKER_PARALLEL`) -- Q4_K_S fits 4x32768, not 4x40960.
-- **Depth over the worker's per-slot limit.** A prompt above `WORKER_CTX_PER_SLOT` (32768) 400s.
+  fewer/smaller slots (`WORKER_CTX_PER_SLOT`, `WORKER_PARALLEL`) -- Q4_K_S fits 3x45056, not 4x45056.
+- **Depth over the worker's per-slot limit.** A prompt above `WORKER_CTX_PER_SLOT` (45056) 400s.
 - **fool not synced.** `make status` flags DRIFT if fool's spark clone diverges from the pin;
   `make fool-sync`.
 - **Effort too high.** If every orchestrator turn is glacial, confirm `FOOL_EFFORT=high` (not
