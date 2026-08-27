@@ -17,6 +17,9 @@ self-judgment: a run that "looks fine" but shows 0 subagents on a fan-out task d
 | Is everything wired + live? | `make test` | unit + config + a live worker round-trip |
 | Are both servers healthy? | `make health` | real completions on fool + magus + opencode round-trip |
 | Did the orchestrator delegate? | `make bench-e2e` | runs real tasks, PROVES subagents via the opencode DB |
+| Does delegation hold at long ctx? | `make bench-longctx` | needle-at-depth + delegation fused, DB-verified |
+| Does the subagent prune keep workers competent? | `make bench-prune` | worker reads past its input budget, must still answer from an evicted early file (DB tokens + notes file verified) |
+| Does memory beat compaction? | `make bench-memory` | sliding-window recall A/B on a long coding session (LLM-judged) |
 | Did speed regress? | `make bench-speed` | TTFT / prefill / decode / concurrency / cache, both nodes |
 | Did reasoning regress? | `make bench-eval` | real gsm8k + ruler + deep multi-hop accuracy |
 

@@ -73,7 +73,7 @@ def db_children(project, root):
     """Airtight cross-check: per-subagent provider + tokens + cost from the session DB."""
     if not root:
         return []
-    q = ("SELECT agent, json_extract(model,'$.providerID') AS prov, "
+    q = ("SELECT id, agent, json_extract(model,'$.providerID') AS prov, "
          "tokens_input, tokens_output, cost FROM session WHERE parent_id = '%s'" % root)
     try:
         p = subprocess.run(["opencode", "db", "--format", "json", q],

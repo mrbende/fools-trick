@@ -224,6 +224,20 @@ e2e_run() {
     --out "$BENCH_DIR/e2e-$STAMP.jsonl" --md "$BENCH_DIR/e2e-$STAMP.md" --logfile "$LOG"
 }
 
+# Subagent context-prune: a worker reads a haystack larger than its input budget and must still
+# answer from an early, since-evicted file -- proving the in-context prune preserves competency.
+PRUNE="$OPENCODE_PROJECT_DIR/bench/prune.py"
+prune_run() {
+  command -v opencode >/dev/null || { warn "opencode missing; skip prune"; return; }
+  serving "$WORKER_URL" || { warn "worker down; skip prune"; return; }
+  serving "$FOOL_URL" || { warn "orchestrator down; skip prune (dispatch needs it)"; return; }
+  # Enough files to push worker input past WORKER_INPUT_TOKENS with margin; scale with SIZE.
+  local files; case "$SIZE" in smoke) files=6;; small) files=8;; large) files=12;; max) files=16;; *) files=8;; esac
+  step "prune (subagent competency under eviction) -- $files files"
+  "$PY" "$PRUNE" --project "$OPENCODE_PROJECT_DIR" --files "$files" --file-tokens 6000 \
+    --timeout 2400 --out "$BENCH_DIR/prune-$STAMP.jsonl" --logfile "$LOG"
+}
+
 # Memory A/B: does sliding-window + recall beat opencode's compaction on a long coding session?
 # Runs both arms (on = memory plugin, off = MEMORY_ENABLED=0 compaction baseline), then diffs.
 # LLM-judged, closed-book-controlled, includes an agentic-recall probe (subagent findings must
@@ -250,6 +264,7 @@ case "${1:-all}" in
   longctx)    STEP_TOTAL=2; preflight; longctx_fool; finish ;;
   speed)      STEP_TOTAL=2; preflight; speed_worker; speed_fool; finish ;;
   e2e)        STEP_TOTAL=1; preflight; e2e_run; finish ;;
+  prune)      STEP_TOTAL=1; preflight; prune_run; finish ;;
   memory)     STEP_TOTAL=3; preflight; memory_ab; finish ;;
   # quick: fast representative signal across the whole system -- capability + code/tools + e2e.
   quick)      SIZE=smoke; STEP_TOTAL=4; preflight; capability_worker; code_tools_worker; e2e_run; finish ;;
@@ -257,7 +272,7 @@ case "${1:-all}" in
   # is guarded with `|| warn` so a single step's failure (infra hiccup, non-zero exit) can never
   # abort the run before finish() writes the report/xlsx -- a benchmark must always produce its
   # scorecard from whatever completed.
-  all)        STEP_TOTAL=15; preflight
+  all)        STEP_TOTAL=16; preflight
               speed_worker      || warn "speed[worker] step errored"
               speed_fool        || warn "speed[fool] step errored"
               capability_worker || warn "capability[worker] step errored"
@@ -265,8 +280,9 @@ case "${1:-all}" in
               code_tools_worker || warn "code/tools step errored"
               safety_worker     || warn "safety step errored"
               e2e_run           || warn "e2e step errored"
+              prune_run         || warn "prune step errored"
               longctx_fool      || warn "longctx step errored"
               memory_ab         || warn "memory A/B step errored"
               finish ;;
-  *) die "usage: bench.sh {all|quick|capability|code|safety|longctx|speed|e2e|memory}   (SIZE=smoke|small|large|max)" ;;
+  *) die "usage: bench.sh {all|quick|capability|code|safety|longctx|speed|e2e|prune|memory}   (SIZE=smoke|small|large|max)" ;;
 esac

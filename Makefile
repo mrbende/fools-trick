@@ -94,6 +94,9 @@ bench-memory: ## memory A/B: sliding-window+recall vs compaction on a long codin
 .PHONY: bench-e2e
 bench-e2e: ## delegation: whole opencode harness on real fan-out tasks (DB-verified)
 	@$(S)/bench.sh e2e
+.PHONY: bench-prune
+bench-prune: ## subagent prune: worker reads past its budget, must stay correct (DB+notes verified)
+	@SIZE=$(SIZE) $(S)/bench.sh prune
 .PHONY: bench-quants
 bench-quants: ## A/B quants (Q4_K_S vs IQ3_M vs Q3_K_M) on code+tools+gsm8k -- does a smaller quant hold tool-calling
 	@$(S)/compare.sh quants
