@@ -216,13 +216,35 @@ def cache_check(url, model, engine, timeout, out, md):
             ui.summary("prefix caching", 0, 1, f"only {verdict:.0f}% cached -- off or prefix too small")
 
 
+def _default_depths():
+    # the worker's live per-slot context, so the depth sweep tracks the served shape
+    import sys, os
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    try:
+        from core.config import load
+        return [512, 8192, load().worker_ctx_per_slot]
+    except Exception:
+        return [512, 8192, 32768]
+
+
+def _default_concurrency():
+    import sys, os
+    sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+    try:
+        from core.config import load
+        n = load().worker_parallel
+        return sorted({1, n})  # single-stream and full-fanout
+    except Exception:
+        return [1, 3]
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", required=True)
     ap.add_argument("--model", required=True)
     ap.add_argument("--engine", choices=["llama", "vllm"], required=True)
-    ap.add_argument("--depths", type=int, nargs="+", default=[512, 8192, 45056])
-    ap.add_argument("--concurrency", type=int, nargs="+", default=[1, 2, 3])
+    ap.add_argument("--depths", type=int, nargs="+", default=_default_depths())
+    ap.add_argument("--concurrency", type=int, nargs="+", default=_default_concurrency())
     ap.add_argument("--reps", type=int, default=3)
     ap.add_argument("--timeout", type=int, default=1200)
     ap.add_argument("--out")

@@ -1,0 +1,27 @@
+# Worker backend: Qwen3.8-27B-OBLITERATED on 2x RTX 3080 Ti via llama.cpp. Selected by
+# deploy.yaml's `worker: 3080ti-qwen27`. Physics derivation in docs/hardware.md.
+name: 3080ti-qwen27
+kind: llama-local       # served locally via deploy/worker/serve.sh on this host's GPUs
+model: qwen3.8-27b-obliterated
+base_url: http://127.0.0.1:8898/v1
+host: 127.0.0.1
+port: 8898
+parallel: 4             # concurrent slots
+ctx_per_slot: 32768     # context per slot
+max_output: 12288       # opencode output floor for the worker
+unit: fools-worker      # systemd --user transient unit
+
+# llama.cpp serving physics. q8_0 = only KV with a CUDA FA kernel for this hybrid arch; layer =
+# only split that loads the SSM tensors on 2 GPUs; 10,12 biases weights off GPU0 (the desktop card).
+serve:
+  kv: q8_0
+  split_mode: layer
+  tensor_split: "10,12"
+  reasoning: low
+  temp: 0.6
+  top_p: 0.95
+  top_k: 20
+  file: Qwen3.8-27B-OBLITERATED.i1-Q4_K_S.gguf
+  repo: mradermacher/Qwen3.8-27B-OBLITERATED-i1-GGUF
+  quant: i1-Q4_K_S
+  candidates: [i1-Q4_K_S, i1-IQ3_M, i1-Q3_K_M]

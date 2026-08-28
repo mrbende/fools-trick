@@ -19,7 +19,7 @@ precise one.
 import argparse, glob, json, os, sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-from core import wilson  # noqa: E402
+from shared import wilson  # noqa: E402
 
 
 def ci(correct, total):

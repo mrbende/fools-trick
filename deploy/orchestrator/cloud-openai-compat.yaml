@@ -1,0 +1,10 @@
+# Orchestrator backend: any cloud / remote OpenAI-compatible endpoint. No local serving -- the
+# ops scripts skip orchestrator bring-up for kind: cloud and just point the harness at base_url.
+# Copy, rename, set model/base_url/api_key, and select it in deploy.yaml's `orchestrator:`.
+name: cloud-openai-compat
+kind: cloud            # external endpoint; nothing to serve locally
+model: ""              # the provider's model id
+base_url: ""           # e.g. https://api.deepseek.com/v1 or a remote vLLM
+api_key_env: ""        # env var holding the key (never commit a key)
+context: 128000        # the provider's context limit
+max_output: 8192

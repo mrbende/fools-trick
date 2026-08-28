@@ -1,15 +1,15 @@
-# fools-trick: distributed opencode coding system.
-# Orchestrator (DeepSeek-V4-Flash, abliterated) on fool; workers (Qwen3.8-27B-OBLITERATED) on magus.
-# magus targets run locally; fool targets run over SSH. Run `make` for the menu.
+# fools-trick: a local distributed coding harness -- a deep orchestrator + fast concurrent
+# workers, with owned Python primitives (core/) plugged into opencode via thin adapters.
+# Config is one source of truth: config.yaml (the method) + deploy.yaml (the rig). Run `make`.
 
 SHELL := /bin/bash
-S := ./scripts
+S := ./deploy/scripts
 
 # Skills are allowlist-only in this repo: load ONLY .opencode/skills, never the
 # global (~/.config/opencode/skills) or external (~/.claude, ~/.agents) scans.
 # This keeps worker requests inside the 32k slot; the global catalog alone
 # overran it. Exported so every opencode invocation from the harness matches
-# the interactive sessions (which get the same vars via .envrc/direnv).
+# the interactive sessions.
 export OPENCODE_DISABLE_EXTERNAL_SKILLS := 1
 export OPENCODE_DISABLE_CLAUDE_CODE_SKILLS := 1
 
@@ -26,8 +26,15 @@ help:
 
 ##@ Setup
 .PHONY: bootstrap
-bootstrap: ## one-time (idempotent): submodule, fool clone, all weights. Re-run to verify.
+bootstrap: ## one-time (idempotent): adapter deps, submodule, fool clone, all weights. Re-run to verify.
 	@$(S)/bootstrap.sh
+.PHONY: config
+config: ## generate opencode.json from config.yaml + opencode.base.json (single source of truth)
+	@python3 -m core.config --check
+	@python3 -m core.config --opencode > opencode.json && echo "wrote opencode.json from config.yaml"
+.PHONY: config-show
+config-show: ## print the fully-resolved config (config.yaml + config.local + deploy merged)
+	@python3 -m core.config --json
 .PHONY: preflight
 preflight: ## read-only readiness check: tools, disk, mounts, weights, fool sync, endpoints
 	@$(S)/preflight.sh
@@ -52,6 +59,9 @@ health: ## active end-to-end: real completions + opencode round-trip
 .PHONY: logs
 logs: ## unified logs: worker (magus) + orchestrator (fool) interleaved, node-prefixed
 	@$(S)/logs.sh all
+.PHONY: observe
+observe: ## per-task rollup (tokens, delegation, wall) + trip-wires vs recent baseline
+	@python3 -m core.observe
 
 ##@ Weights
 .PHONY: weights
@@ -95,8 +105,14 @@ bench-memory: ## memory A/B: sliding-window+recall vs compaction on a long codin
 bench-e2e: ## delegation: whole opencode harness on real fan-out tasks (DB-verified)
 	@$(S)/bench.sh e2e
 .PHONY: bench-prune
-bench-prune: ## subagent prune: worker reads past its budget, must stay correct (DB+notes verified)
+bench-prune: ## subagent prune: worker reads past its budget, must stay correct (outcome-verified)
 	@SIZE=$(SIZE) $(S)/bench.sh prune
+.PHONY: bench-cap
+bench-cap: ## per-result cap: a worker reads past the cap, must recover the spilled tail by seq
+	@SIZE=$(SIZE) $(S)/bench.sh cap
+.PHONY: bench-xagent
+bench-xagent: ## cross-agent memory: subagent writes, a fresh session recalls (thread-root proof)
+	@$(S)/bench.sh xagent
 .PHONY: bench-quants
 bench-quants: ## A/B quants (Q4_K_S vs IQ3_M vs Q3_K_M) on code+tools+gsm8k -- does a smaller quant hold tool-calling
 	@$(S)/compare.sh quants

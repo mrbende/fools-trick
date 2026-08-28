@@ -3,6 +3,10 @@
 .opencode/logs/
 .opencode/node_modules/
 
+# harness adapter JS deps (installed by npm; the owned core is Python)
+/node_modules/
+package-lock.json
+
 # benchmark venv + isolated eval venvs
 .bench-venv/
 .bfcl-venv/
@@ -25,8 +29,8 @@ report-*.md
 scorecard-*.xlsx
 manifest-*.json
 
-# site-specific overrides (your hostnames/LAN/paths) -- never commit; ship the .example instead
-scripts/config.local.sh
+# generated from opencode.base.json + config by `make config` -- derived, not a source
+opencode.json
 
 # credentials / secrets (never commit)
 *.env
@@ -35,8 +39,14 @@ scripts/config.local.sh
 *credentials*.json
 gcp-*.json
 
-# durable memory store db (lives in ~/.local/share by default; ignore any stray in-tree copy).
-# NOTE: only the .db files -- NOT the plugin source in .opencode/memory/*.js
+# durable memory store db (lives in ~/.local/share by default; ignore any stray in-tree copy)
 *.db
 *.db-wal
 *.db-shm
+
+# OS / editor cruft
+.DS_Store
+*~
+*.swp
+*.orig
+*.bak

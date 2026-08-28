@@ -1,14 +1,14 @@
 #!/usr/bin/env bash
-# Unit tests for the shell helpers in scripts/lib.sh. Pure logic only -- no network,
+# Unit tests for the shell helpers in deploy/scripts/lib.sh. Pure logic only -- no network,
 # no servers. A tiny assert harness (no bats dependency).
 
 set -uo pipefail
 HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 ROOT="$(cd "$HERE/.." && pwd)"
-# shellcheck source=../scripts/config.sh
-source "$ROOT/scripts/config.sh"
-# shellcheck source=../scripts/lib.sh
-source "$ROOT/scripts/lib.sh"
+# shellcheck source=../deploy/scripts/env.sh
+source "$ROOT/deploy/scripts/env.sh"
+# shellcheck source=../deploy/scripts/lib.sh
+source "$ROOT/deploy/scripts/lib.sh"
 
 pass=0; fail=0
 check() {  # check <name> <expected> <actual>

@@ -1,6 +1,13 @@
 # Persistent memory + sliding context: architecture
 
-Status: BUILDING. This is the settled shape; implement against it in layers.
+Status: SUPERSEDED (in part) by docs/harness-design.md, which is the current ground-up design.
+This doc records the original memory design and its research basis (the Zep/compaction argument,
+the two-subsystem split); that reasoning still holds and is worth reading. But the AS-BUILT system
+differs: the logic is now a harness-agnostic PYTHON core (core/log, core/context, core/tools), not
+JS plugins under .opencode/memory; the subagent tier does RECOVERABLE eviction (evict from the
+view, keep the durable copy addressable by seq, recover via expand()) rather than the lossy
+in-place prune described below; and config lives in config.yaml, not config.sh. Where this doc and
+harness-design.md disagree on the subagent context path, harness-design.md wins.
 
 ## The problem, precisely
 

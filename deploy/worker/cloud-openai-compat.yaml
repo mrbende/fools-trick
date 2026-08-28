@@ -1,0 +1,11 @@
+# Worker backend: a cloud / remote OpenAI-compatible endpoint for the workers. kind: cloud means
+# the ops scripts skip local bring-up and just point the harness at base_url. Useful for testing
+# a hosted worker model or a different GPU host. Copy, rename, set fields, select in deploy.yaml.
+name: cloud-openai-compat
+kind: cloud            # external endpoint; nothing served locally
+model: ""              # provider's model id
+base_url: ""
+api_key_env: ""        # env var holding the key (never commit a key)
+parallel: 4
+ctx_per_slot: 32768    # the provider's usable context for the worker
+max_output: 12288

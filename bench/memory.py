@@ -27,7 +27,8 @@ import argparse, json, os, subprocess, sys, time, random
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import ui
-from core import chat
+from shared import chat
+import shared  # noqa: E402
 
 RESULTS = os.environ.get("MEMORY_BENCH_DIR", "/tmp/fools-trick/membench")
 
@@ -53,8 +54,9 @@ def build_probes(seed):
     rng = random.Random(seed)
     token = f"DEPLOY-{rng.randint(10000,99999)}"
     kv_old, kv_new = "q5_1", "q8_0"                   # the update: KV choice changed mid-session
-    ctx = f"{rng.choice([45056, 40960, 24576])}"
-    slots = "3"
+    import core.config as _cfg  # the live shape, not a hardcoded number
+    ctx = str(_cfg.load().worker_ctx_per_slot)
+    slots = str(_cfg.load().worker_parallel)
     plants = [
         f"For this session, remember: our deploy token is {token}. Acknowledge and continue.",
         f"Remember we initially set the worker KV cache type to {kv_old}. Acknowledge.",
@@ -89,15 +91,15 @@ def build_probes(seed):
 def build_agentic(project):
     # (discovery_prompt asking for a subagent dispatch, recall_question, gold)
     discover = [
-        ("Dispatch a subagent to read scripts/config.sh and report the exact worker serve PORT. "
-         "Just have it find and state the port number.", None, None),
-        ("Dispatch a subagent to read the .opencode/plugin/memory.js file and report HOW MANY "
+        ("Dispatch a subagent to read config.yaml and report the exact worker serve PORT from the "
+         "worker base_url. Just have it find and state the port number.", None, None),
+        ("Dispatch a subagent to read adapters/opencode/plugin_memory.js and report HOW MANY "
          "tools it registers under its tool: block. State the count.", None, None),
     ]
     recall = [
         ("agentic-recall",
          "Earlier a subagent found the worker's serve port and the number of memory tools the "
-         "plugin registers. State both, comma-separated (port, then tool count).",
+         "adapter registers. State both, comma-separated (port, then tool count).",
          "8898 and 3", False),
     ]
     return discover, recall
@@ -137,24 +139,37 @@ def judge_answer(url, model, ptype, question, gold, answer, timeout=120):
         return False
 
 
+def _store(project):
+    """Open the durable Event Log store directly. bench is Python and the core is Python, so
+    this is an in-process call, not a cross-language CLI shell (the language-unification win)."""
+    import sys
+    if project not in sys.path:
+        sys.path.insert(0, project)
+    from core.log.store import EpisodeStore  # noqa: E402
+    db = os.environ.get("MEMORY_DB", os.path.expanduser("~/.local/share/fools-trick/memory.db"))
+    return EpisodeStore(db)
+
+
 def episodes_have(project, thread, needle):
-    """Query the durable store (via the JS query CLI) for whether an episode containing `needle`
-    exists in this thread. Used by the eviction-verification gate."""
-    q = os.path.join(project, ".opencode/memory/query.mjs")
+    """Whether an episode containing `needle` exists in this thread. Eviction-verification gate."""
     try:
-        p = subprocess.run(["node", q, "has", thread, needle], cwd=project,
-                           capture_output=True, text=True, timeout=30, env={**os.environ})
-        return p.stdout.strip().splitlines()[-1].strip() == "yes" if p.stdout.strip() else False
+        s = _store(project)
+        try:
+            hits = s.search(thread=thread, query=needle, k=50)
+            return any(needle.lower() in (e.content or "").lower() for e in hits)
+        finally:
+            s.close()
     except Exception:
         return False
 
 
 def episode_count(project, thread):
-    q = os.path.join(project, ".opencode/memory/query.mjs")
     try:
-        p = subprocess.run(["node", q, "count", thread], cwd=project,
-                           capture_output=True, text=True, timeout=30, env={**os.environ})
-        return int(p.stdout.strip().splitlines()[-1]) if p.stdout.strip() else 0
+        s = _store(project)
+        try:
+            return len(s.recent(thread=thread, k=100000))
+        finally:
+            s.close()
     except Exception:
         return 0
 
@@ -202,6 +217,7 @@ def closed_book_control(project, probes, judge_url, judge_model, timeout):
 
 
 def run_arm(a):
+    shared.assert_our_config(a.project)
     os.makedirs(RESULTS, exist_ok=True)
     out = open(os.path.join(RESULTS, f"{a.arm}.jsonl"), "w")
     plants, probes, plant_needle = build_probes(a.seed)
@@ -300,6 +316,60 @@ def diff(a_label, b_label):
     print(f"\n(a={a_label} memory-on, b={b_label} compaction baseline; delta>0 = memory helps)")
 
 
+def run_xagent(a):
+    shared.assert_our_config(a.project)
+    """Cross-agent memory arm: a SUBAGENT writes a fact, a FRESH orchestrator session reads it.
+
+    The historically-broken path (docs/memory-design.md RESOLVED): a worker's memory_write lands
+    under its child sessionID; a new orchestrator session must resolve the same ROOT thread (via
+    resolve_thread walking parent_id) or cross-agent recall silently returns nothing. This arm is
+    the live proof that path works -- nothing else in the suite crosses distinct session ids.
+
+    Construction: turn 1 (a fresh session) dispatches a subagent instructed to memory_write a
+    planted token. Turn 2 runs in a BRAND-NEW session (no --session) and must recall the token.
+    Pass = the fresh session's answer contains the planted token. A closed-book control (a fresh
+    session that never saw the write must NOT produce it) guards against leakage/world-knowledge.
+    """
+    os.makedirs(RESULTS, exist_ok=True)
+    out = open(os.path.join(RESULTS, "xagent.jsonl"), "w")
+    token = f"XTOKEN-{random.Random(a.seed).randint(10000, 99999)}"
+    write_prompt = (
+        f"Dispatch a subagent to call the memory_write tool to persist this exact fact, verbatim: "
+        f"'the cross-agent deploy token is {token}'. Have the subagent confirm it wrote it. Then "
+        f"just say done.")
+    recall_q = ("A subagent in a prior, separate session wrote a cross-agent deploy token to shared "
+                "memory. Call memory_search for 'cross-agent deploy token' and state the token. "
+                "Answer with just the token.")
+
+    ui.phase("memory cross-agent arm -- subagent writes, a fresh session recalls")
+    _, sid1, rc = run_turn(a.project, write_prompt, None, a.timeout)  # session 1 (parent of the subagent)
+    if rc == 124:
+        ui.log.error("write turn timed out"); out.close(); return
+    # a fresh session (no --session) in the SAME project: shares the project's thread root, so it
+    # must recall the subagent's write. This is the cross-agent path (distinct session ids, one
+    # shared thread).
+    ans, sid2, rc = run_turn(a.project, recall_q, None, a.timeout)
+    hit = token in (ans or "")
+    # closed-book control: run in an ISOLATED project dir so it cannot share the write's thread --
+    # a valid control. If it produces the token there, the write leaked across unrelated
+    # conversations (a real failure), not the intended shared-thread recall.
+    import tempfile
+    with tempfile.TemporaryDirectory(prefix="ft-xagent-control-") as isolated:
+        ctrl_ans, _, _ = run_turn(isolated, recall_q, None, a.timeout)
+    leaked = token in (ctrl_ans or "")
+    ok = hit and not leaked
+    rec = {"test": "memory-xagent", "pass": bool(ok), "recalled": hit, "closed_book_leak": leaked,
+           "write_session": sid1, "recall_session": sid2, "distinct_sessions": sid1 != sid2}
+    out.write(json.dumps(rec) + "\n"); out.write(json.dumps(
+        {"test": "memory-xagent-summary", "passed": int(ok), "total": 1}) + "\n"); out.close()
+    tbl = ui.Table("memory[xagent]", ["check", "pass"], None, justify=["left", "center"])
+    tbl.add(["subagent write -> fresh-session recall", "yes" if hit else "NO"], style=(None if hit else "red"))
+    tbl.add(["closed-book control (no leak)", "yes" if not leaked else "NO"], style=(None if not leaked else "red"))
+    tbl.render()
+    ui.log.info("memory[xagent]: %s (recalled=%s leak=%s distinct_sessions=%s)",
+                "pass" if ok else "FAIL", hit, leaked, sid1 != sid2)
+
+
 def main():
     ap = argparse.ArgumentParser()
     sub = ap.add_subparsers(dest="cmd")
@@ -312,16 +382,23 @@ def main():
     r.add_argument("--judge-url", required=True, help="orchestrator base WITHOUT /v1")
     r.add_argument("--judge-model", required=True)
     r.add_argument("--logfile", help="append harness logs here (matches other bench modules)")
+    x = sub.add_parser("xagent", help="cross-agent arm: subagent writes, a fresh session recalls")
+    x.add_argument("--project", required=True)
+    x.add_argument("--timeout", type=int, default=600)
+    x.add_argument("--seed", type=int, default=42)
+    x.add_argument("--logfile")
     d = sub.add_parser("diff", help="paired delta of two arms")
     d.add_argument("--a", default="on")
     d.add_argument("--b", default="off")
-    # allow bare `run`-style invocation for symmetry with other bench modules
     a = ap.parse_args()
     if a.cmd == "diff":
         diff(a.a, a.b)
     elif a.cmd == "run":
         ui.setup_logging(a.logfile)
         run_arm(a)
+    elif a.cmd == "xagent":
+        ui.setup_logging(a.logfile)
+        run_xagent(a)
     else:
         ap.print_help()
 

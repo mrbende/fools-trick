@@ -19,6 +19,10 @@ Tasks: bench/tasks/*.json as {name, prompt, expect (regex), min_subagents, want_
 """
 import argparse, json, os, re, subprocess, sys, time, glob
 import ui
+import shared  # noqa: E402
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+from core.observe import task_rollup, check  # noqa: E402
 
 
 def run_opencode_json(project, prompt, timeout):
@@ -92,19 +96,19 @@ def default_tasks():
     return [
         {"name": "fanout-review",
          "prompt": ("Use subagents to inspect this repo in parallel: dispatch one worker to list "
-                    "the make targets in the Makefile and one to summarize what scripts/config.sh "
+                    "the make targets in the Makefile and one to summarize what config.yaml "
                     "configures. Then give me a two-line summary combining both."),
-         "expect": r"(bootstrap|preflight|worker|fool)",
+         "expect": r"(bootstrap|preflight|worker|orchestrator)",
          "min_subagents": 1, "want_provider": "magus"},
         {"name": "single-fact",
-         "prompt": "What port does the worker serve on, per scripts/config.sh? Answer with just the number.",
+         "prompt": "What port does the worker serve on, per config.yaml? Answer with just the number.",
          "expect": r"8898", "min_subagents": 0},
         {"name": "reasoning",
-         "prompt": ("If the worker runs 3 parallel slots and each holds 45056 tokens, what is the "
-                    "total KV context in tokens? Answer with the number."),
-         "expect": r"135168|135,168", "min_subagents": 0},
+         "prompt": ("If the worker runs 4 parallel slots and each holds 32768 tokens, what is the "
+                    "total context in tokens? Answer with just the number."),
+         "expect": r"131072|131,072", "min_subagents": 0},
         {"name": "substantive-audit",
-         "prompt": ("Dispatch one worker to read scripts/down.sh and write a concise "
+         "prompt": ("Dispatch one worker to read deploy/scripts/down.sh and write a concise "
                     "function-by-function audit (one short paragraph per function: purpose, "
                     "inputs, any bug) to /tmp/fools-trick/scratch/down-audit.md, then return a "
                     "2-line summary. Keep the audit under 400 words -- concise, not exhaustive."),
@@ -135,6 +139,7 @@ def main():
     ap.add_argument("--md")
     ap.add_argument("--logfile")
     a = ap.parse_args()
+    shared.assert_our_config(a.project)
     ui.setup_logging(a.logfile)
     out = open(a.out, "a") if a.out else None
     md = open(a.md, "a") if a.md else None
@@ -148,6 +153,7 @@ def main():
                    justify=["left", "center", "right", "right", "left", "center", "right", "right"])
 
     passed = 0
+    prior_roots = []  # root session ids of completed tasks this run, for trip-wire baselines
     for t in tasks:
         with ui.console.status(f"running '{t['name']}' (orchestrating, may take minutes)..."):
             events, root, wall, rc = run_opencode_json(a.project, t["prompt"], a.timeout)
@@ -183,13 +189,28 @@ def main():
         ok = answer_ok and deleg_ok and artifact_ok
         passed += ok
 
+        # Observability rollup: this task's root+descendant tokens/delegation/wall, and any
+        # trip-wire it trips against the prior tasks in THIS run. Grounds pass/fail in the
+        # resource signal (Layer 6), not just the answer.
+        rollup = task_rollup(root, a.project) if root else None
+        wires = [w for w in check(rollup, [task_rollup(r, a.project) for r in prior_roots]) if w.fired] \
+            if (rollup and prior_roots) else []
+
         rec = {"test": "e2e", "task": t["name"], "pass": bool(ok),
                "answer_ok": answer_ok, "delegation_ok": deleg_ok, "artifact_ok": artifact_ok, "rc": rc,
                "wall_s": round(wall, 1), "subagents": n_sub, "types": types,
                "on_want_provider": on_want, "want_provider": a.want_provider,
                "providers": provs, "tokens": tok, "cost": round(cost, 4),
-               "root_session": root, "answer_tail": answer[-200:]}
+               "root_session": root, "answer_tail": answer[-200:],
+               "rollup_tokens": rollup.tokens_total if rollup else None,
+               "trip_wires": [w.name for w in wires]}
         emit(rec, out)
+        if rollup:
+            ui.log.info("%s: rollup total_tokens=%d subs=%d wall=%ds%s",
+                        t["name"], rollup.tokens_total, rollup.subagents, round(rollup.wall_s),
+                        (" tripwires=" + ",".join(w.name for w in wires) if wires else ""))
+        if root:
+            prior_roots.append(root)
         ui.log.info("%s: pass=%s subagents=%d types=%s on_%s=%s tokens=%d",
                     t["name"], ok, n_sub, types, a.want_provider, on_want, tok)
 

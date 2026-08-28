@@ -1,0 +1,14 @@
+# Orchestrator backend: DeepSeek-V4-Flash on a DGX Spark (GB10), served by the spark submodule.
+# Selected by deploy.yaml's `orchestrator: spark-gb10`.
+name: spark-gb10
+kind: spark            # serving driver: spark submodule on the orchestrator host
+model: deepseek-v4-flash-0731
+base_url: http://fool:8888/v1
+host: fool             # SSH target for the deploy
+port: 8888
+context: 384000
+max_output: 65536
+ablate: 1              # runtime refusal-direction ablation
+effort: high           # reasoning effort; high plans good fan-outs without max token-burn
+remote_url: https://github.com/mrbende/DeepSeek-v4-Flash-One-DGX-Spark.git
+fool_dir: ~/Recipes/fools-trick-spark

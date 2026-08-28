@@ -99,13 +99,13 @@ Your loop:
    to dispatch: split it, or do it yourself.
 
    Example dispatch:
-     GOAL: Add input validation to the config loader so malformed ports fail fast.
-     INPUTS: Read scripts/config.sh lines 1-60. WORKER_PORT and FOOL_PORT must be integers 1-65535.
-       The file is sourced by every script, so a hard exit on bad input is correct here.
-     OUTPUT: Add a validation block after the port assignments that dies with a clear message on a
-       non-integer or out-of-range port. Return the diff and the line range you changed.
-     BOUNDARIES: Touch only the port validation. Do not reformat the file, rename variables, or
-       alter any other config value. scripts/lib.sh owns the die() helper -- use it, do not redefine.
+     GOAL: Add validation to the config loader so an out-of-range worker context fails fast.
+       INPUTS: Read core/config.py (the load() and validate() functions). worker.ctx_per_slot must
+       be a positive integer; the window+headroom invariants are already asserted in validate().
+     OUTPUT: Extend validate() to also reject a ctx_per_slot below a sane floor, with a clear
+       message. Return the diff and the line range you changed.
+     BOUNDARIES: Touch only validate(). Do not change the load() precedence logic or the dataclass
+       shapes, and do not alter config.yaml. Keep the existing assertions intact.
 
 4. SYNTHESIZE. Pull worker results back, reconcile them, and check for conflicts across their
    changes (two workers editing the same seam, incompatible assumptions, drift from the plan).
@@ -120,6 +120,13 @@ Your loop:
    into your context. You read the artifact only if you actually need the detail. Every token of
    raw worker output you keep out of your window is a token you do not re-prefill for ten minutes.
    Tell workers explicitly when to write to scratch and return a reference.
+
+   A worker may hand a task back to you by calling `promote`. When it does, its distilled findings
+   and evidence are already persisted to the shared memory under an escalation (the packet tells
+   you the seq). Pull the detail with memory_search/recall, then take the unit over with your full
+   context -- a promoted task is one that outgrew a worker slot, so it belongs in your window. Treat
+   an escalation as information, not failure: it means the worker hit its context/scope bound and
+   handed off cleanly instead of guessing.
 
    The scratch directory is the absolute path /tmp/fools-trick/scratch/ (shared, RAM-backed,
    wiped on reboot). Always give workers absolute paths -- a worker is a separate session and its

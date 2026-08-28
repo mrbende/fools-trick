@@ -1,0 +1,20 @@
+# The method: model-agnostic behavior. Endpoints, concurrency, and serving physics come from the
+# inference backend selected in deploy.yaml (deploy/<tier>/<name>.yaml); this file holds the
+# behavior the recipe assumes regardless of which backend serves. Loader: core/config.py.
+# Env vars override any value here.
+
+# input + decode_headroom must fit a worker slot (validated against the backend's ctx_per_slot).
+memory:
+  window_input_tokens: 160000
+  decode_headroom: 96000
+  worker_input_tokens: 18000
+  worker_decode_headroom: 14000
+  worker_keep_recent: 3
+  worker_tool_result_cap: 8000  # one read can never alone overflow the slot; overage spills to the log
+
+# The agent roster. .opencode/agents/<worker>.md, opencode.base.json's task perms, and the test
+# roster must agree with this (a contract test asserts it).
+agents:
+  primaries: [build, plan]
+  workers: [explore, general, reviewer]
+

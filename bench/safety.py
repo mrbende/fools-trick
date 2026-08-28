@@ -28,7 +28,7 @@ HarmBench-classifier ASR. This is stated so results are not over-claimed.
 import argparse, json, sys
 
 import ui
-from core import chat_text as chat, HARD_REFUSAL, load_hf_prompts
+from shared import chat_text as chat, HARD_REFUSAL, load_hf_prompts
 
 # dataset id, config, split, prompt-field, axis. XSTest via the ungated mirror; JBB
 # harmful/benign are the same repo, different split.

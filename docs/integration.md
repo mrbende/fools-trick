@@ -1,5 +1,10 @@
 # How fools-trick integrates with the rest of the machine
 
+> Note: the memory/context layer is now a harness-agnostic PYTHON core (`core/`) plugged into
+> opencode via a thin adapter (`adapters/opencode/`), not the JS plugins under `.opencode/memory/`
+> that this doc's later sections describe. The integration *seams* it documents still hold; the
+> implementation language changed. See docs/harness-design.md for the current design.
+
 This records how fools-trick composes with the two other config layers on magus, so the
 seams do not rot. Three layers, cleanly separated by concern:
 
@@ -110,5 +115,7 @@ The memory layer (`docs/memory-design.md`) adds three integration seams:
   write the shared store; each episode is attributed by `sessionID` and `agent` from the tool
   context, and keyed by the conversation's root thread so recall is scoped per conversation.
 
-The memory modules are plain Node using the built-in `node:sqlite` and a zero-dependency RESP
-client over a TCP socket (`.opencode/memory/`), so the layer adds no npm dependencies.
+The memory/context logic is a zero-dependency Python core (`core/`): stdlib `sqlite3`+FTS5 for the
+Event Log and a raw-socket RESP client for Redis. The opencode adapter (`adapters/opencode/`) calls
+it over a subprocess for tools and applies its eviction decisions in-process; its one JS dependency
+(`@opencode-ai/plugin`) is declared in the root `package.json`.

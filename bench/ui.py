@@ -10,7 +10,7 @@ Result rows still go to the markdown FILE (machine-readable) in parallel with th
 rich table on screen. rich degrades cleanly when stdout is not a TTY.
 """
 # Stats helpers are defined in core; surfaced here too so ui is the single stats+display surface.
-from core import wilson, stat_str  # noqa: F401
+from shared import wilson, stat_str  # noqa: F401
 
 import logging
 from rich.console import Console

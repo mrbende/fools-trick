@@ -1,5 +1,10 @@
 # fools-trick: a first-principles review
 
+> Note: written before the ground-up rebuild. The operating point, the serving physics, and the
+> benchmark instrument it describes still hold, but the memory/context layer is now a Python core
+> (`core/`) behind an opencode adapter, and config is `config.yaml` + `deploy.yaml` (not
+> `config.sh`, not JS under `.opencode/memory/`). See docs/harness-design.md for the current design.
+
 A ground-up account of what this system is, why each layer is shaped the way it is, what is
 verified working, and where the real edges are. Written against the system as it actually runs
 (both nodes up, all tests green at time of writing), not from memory.

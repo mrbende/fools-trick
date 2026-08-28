@@ -1,0 +1,24 @@
+# The rig pointer: which inference backends are live, plus rig-shared topology.
+#
+# orchestrator / worker select a backend definition from deploy/<tier>/<name>.yaml. That backend
+# supplies the endpoint (base_url/model/context/concurrency) and its serving physics; config.yaml
+# (the method) supplies the behavior. Toggle a model or a hardware/cloud target by changing the
+# pointer here and running `make config && make up`. Env vars override any value here.
+
+orchestrator: spark-gb10
+worker: 3080ti-qwen27
+
+# Rig-shared topology: the same regardless of which backend serves.
+topology:
+  lan_prefix: 192.168.1.   # confirms the fast LAN link, not a VPN overlay
+
+weights:
+  nas_models: /mnt/empress/models
+  local_models: ~/Models
+  llama_server: ~/.local/bin/llama-server
+  local_min_free_gib: 24
+  nas_min_free_gib: 120
+
+redis:
+  container: fools-redis
+  image: redis:7-alpine

@@ -23,7 +23,7 @@ bench venv (datasets). HF token auto-read.
 """
 import argparse, json, random, re, sys, time, urllib.request
 import ui
-from core import chat, answer_text
+from shared import chat, answer_text
 
 try:
     from datasets import load_dataset

@@ -1,0 +1,9 @@
+{
+  "name": "fools-trick",
+  "private": true,
+  "type": "module",
+  "description": "Harness adapters for the fools-trick distributed coding system. The owned core is Python (core/); this package holds only the opencode adapter's JS dependency so module resolution works from adapters/ and .opencode/.",
+  "dependencies": {
+    "@opencode-ai/plugin": "1.18.22"
+  }
+}
