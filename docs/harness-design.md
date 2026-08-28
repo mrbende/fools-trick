@@ -693,7 +693,35 @@ timeline in address order with provenance. Our `memory_search` returns BM25 (rel
 knowledge-update question is the positional `expand`/`recent` path (ordered by seq), or a
 `memory_search` followed by reading the seq-ordered neighbors -- not BM25 rank alone. This is a
 usage note for the orchestrator prompt and the recall tool, not a code change: when a fact may have
+usage note for the orchestrator prompt and the recall tool, not a code change: when a fact may have
 changed, read the seq range, not just the top BM25 hit.
+
+## OPEN (the real gap, found by the eviction A/B experiment): the turn-boundary assumption
+
+A targeted A/B -- memory ON (our recoverable eviction) vs OFF (opencode's default compaction) on a
+real long read task (10 files, ~35k tokens of reads) -- produced the decisive result: BOTH arms hit
+`ContextOverflowError` at ~45k tokens on the 32768 slot, with no answer. Identical failure. The
+eviction policy was never the variable, because it never ran.
+
+Root cause, traced through the opencode DB: the worker batched all 10 reads into ONE turn (10 read
+calls between step-starts). The recoverable prune fires at the `messages.transform` turn boundary
+and evicts results from PRIOR turns; the per-result cap fires per-result at `tool.execute.after`.
+When a worker emits many large tool calls in ONE turn, all the results land before the next
+boundary, so the next model request carries the accumulated ~40k BEFORE either mechanism runs. The
+failure lives in the space BETWEEN the mechanisms: the trigger is turn-boundary, but a model that
+batches tool calls overflows within a turn.
+
+RESOLVED. The deeper trace found the overflow was NOT the batching -- the transform hook does run on
+the assembled history and the prune DOES evict correctly in isolation. The live runaway worker had
+ZERO compacted parts, meaning the prune never fired live at all. The cause: the prune-vs-slide
+routing in the transform hook keyed on `agentOf(msgs)`, but a subagent's messages inherit the PARENT
+orchestrator's agent name (`build`), so every worker turn routed to `slideOrchestrator` (the 160k
+orchestrator window) and never to `pruneWorker`. The fix routes on the model PROVIDER (magus vs
+fool-ds4 -- the tier the turn actually runs on), which is config-bound and unambiguous where the
+agent name is not. Proven live on the same task that overflowed both A/B arms: the worker read 22
+files, the prune evicted prior results, the worker recovered them with 6 `recall(seq)` calls, and it
+answered correctly (both the early needle and the late fact). Recoverable eviction now fires in
+production.
 
 ## DEFERRED, revisited with evidence: the two standing triggers
 

@@ -14,6 +14,16 @@ export function agentOf(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i]?.info?.agent) return msgs[i].info.agent
   return ""
 }
+
+// The provider a turn runs on. A subagent's messages inherit the PARENT agent name (a worker turn
+// reads agent=build), so agent-based routing misfires -- the provider is the reliable tier signal.
+export function providerOf(msgs) {
+  for (let i = msgs.length - 1; i >= 0; i--) {
+    const p = msgs[i]?.info?.model?.providerID ?? msgs[i]?.info?.providerID ?? msgs[i]?.model?.providerID
+    if (p) return p
+  }
+  return ""
+}
 export function sessionOf(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i]?.info?.sessionID) return msgs[i].info.sessionID
   return ""

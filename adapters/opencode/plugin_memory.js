@@ -6,7 +6,7 @@ import { mkdirSync, writeFileSync } from "node:fs"
 import { dirname } from "node:path"
 import { callTool, planContext, cfgNum, configSnapshot } from "./bridge.js"
 import {
-  agentOf, sessionOf, inputTokens, applyEvict, toWorkerTurns, toOrchestratorTurns,
+  agentOf, sessionOf, providerOf, inputTokens, applyEvict, toWorkerTurns, toOrchestratorTurns,
 } from "./shape.js"
 
 // Budgets from the config loader, so the prune trigger tracks the served context.
@@ -18,6 +18,7 @@ const ENABLED = process.env.MEMORY_ENABLED != null
   ? process.env.MEMORY_ENABLED === "1"
   : configSnapshot().memory_enabled !== false
 const ORCHESTRATORS = new Set(["build", "plan"])
+const ORCH_PROVIDER = process.env.FOOLS_ORCH_PROVIDER || "fool-ds4"
 
 // Per-session distilled callIDs (fed by note) and the most-recent tool call seen. Bounded.
 const distilled = new Map() // sessionID -> Set<callID>
@@ -106,8 +107,11 @@ export default async () => {
     "experimental.chat.messages.transform": async (_input, output) => {
       const msgs = output?.messages
       if (!Array.isArray(msgs) || !msgs.length) return
-      if (ORCHESTRATORS.has(agentOf(msgs))) await slideOrchestrator(msgs, output)
-      else await pruneWorker(msgs)
+      // Route on the model provider, not the agent name: a subagent's messages inherit the parent
+      // orchestrator's agent (build), which would send every worker turn to the orchestrator slide.
+      const prov = providerOf(msgs)
+      if (prov === ORCH_PROVIDER) await slideOrchestrator(msgs, output)
+      else if (prov) await pruneWorker(msgs)
     },
 
     "tool.execute.after": async (input, output) => {
