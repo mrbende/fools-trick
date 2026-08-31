@@ -56,110 +56,136 @@ function readKey(args) {
   return `${fp}:${args?.offset ?? ""}:${args?.limit ?? ""}`
 }
 
-export default async () => ({
-  "tool.execute.before": async (input, output) => {
-    // Read-loop sensor (before bash gate). A worker re-reading the same path past the threshold
-    // is the doom-loop the substantive run exposed. A ranged read (an offset/limit) is a new
-    // window, not a repeat; an identical re-read of the same span is the loop.
-    if (input.tool === "read") {
-      const sid = input.sessionID
-      const key = readKey(output?.args)
-      if (key) {
-        let m = reads.get(sid); if (!m) { m = new Map(); reads.set(sid, m) }
-        const n = (m.get(key) || 0) + 1; m.set(key, n)
-        if (n > READ_LOOP_THRESHOLD) {
-          throw new Error(
-            `[read-loop] You have read this exact file+range ${n} times without new ground. ` +
-            `Re-reading the same path does not return more. If it was truncated, call recall(seq) ` +
-            `for the full content, or read a DIFFERENT line range (offset/limit). If you already ` +
-            `have enough, stop reading and write the report.`)
-        }
-      }
-      return
-    }
-    if (input.tool !== "bash") return
-    const cmd = String(output?.args?.command ?? "")
-    if (!cmd) return
+// Read-loop sensor: a worker re-reading the same path past the threshold is the doom-loop the
+// substantive run exposed. A ranged read (offset/limit) is a new window, not a repeat; an identical
+// re-read of the same span is the loop.
+function checkReadLoop(input, output) {
+  if (input.tool !== "read") return
+  const sid = input.sessionID
+  const key = readKey(output?.args)
+  if (!key) return
+  let m = reads.get(sid); if (!m) { m = new Map(); reads.set(sid, m) }
+  const n = (m.get(key) || 0) + 1; m.set(key, n)
+  if (n > READ_LOOP_THRESHOLD) {
+    throw new Error(
+      `[read-loop] You have read this exact file+range ${n} times without new ground. ` +
+      `Re-reading the same path does not return more. If it was truncated, call recall(seq) ` +
+      `for the full content, or read a DIFFERENT line range (offset/limit). If you already ` +
+      `have enough, stop reading and write the report.`)
+  }
+}
 
-    // Protected-branch gate: never commit to or push a protected branch directly. Work on feature
-    // branches; integration is a human PR/merge, not a direct agent commit. Checked before the
-    // BLOCKED loop so the message names the real reason (protected branch), not a generic push gate.
-    if (COMMIT_CMD.test(cmd) || PUSH_CMD.test(cmd)) {
-      const branch = currentBranch()
-      if (branch && PROTECTED.has(branch)) {
-        throw new Error(
-          `[protected-branch] '${branch}' is always protected -- no direct commit or push. ` +
-          `Create/switch to a feature branch (git switch -c <feature>), commit there, and hand the ` +
-          `merge back to the human as a PR. Command: ${cmd}`)
-      }
-    }
+// Protected-branch gate: never commit to or push a protected branch directly. Work on feature
+// branches; integration is a human PR/merge, not a direct agent commit. Checked before the
+// BLOCKED loop so the message names the real reason (protected branch), not a generic push gate.
+function checkProtectedBranch(cmd) {
+  if (!(COMMIT_CMD.test(cmd) || PUSH_CMD.test(cmd))) return
+  const branch = currentBranch()
+  if (branch && PROTECTED.has(branch)) {
+    throw new Error(
+      `[protected-branch] '${branch}' is always protected -- no direct commit or push. ` +
+      `Create/switch to a feature branch (git switch -c <feature>), commit there, and hand the ` +
+      `merge back to the human as a PR. Command: ${cmd}`)
+  }
+}
 
-    // Canonicalize gate: a commit with code edited but the objective unproven is canonicalizing on
-    // belief -- hard block. If a contract was recorded, require ITS specific SIGNAL to have run (the
-    // goal-direction close): an unrelated `make lint` must not satisfy a `pytest x` signal. With no
-    // contract, fall back to "any verify command ran since edits." `editedThisSession` tracks that
-    // code was touched at all -- independent of the dirty set, which a verify command clears.
-    if (COMMIT_CMD.test(cmd)) {
-      const s = dirty.get(input.sessionID)
-      const c = contract.get(input.sessionID)
-      const editedCode = !!s && s.everEdited
-      if (c && editedCode && !c.signalRan) {
-        throw new Error(
-          `[canonicalize-gate] Refusing to commit: the success-contract SIGNAL for this task ` +
-          `(\`${c.signal}\`) has not run since the code was edited. Run it, read the result, fix if ` +
-          `red, THEN commit. Do not canonicalize on belief.`)
-      }
-      if (!c && editedCode && !s.everVerified) {
-        throw new Error(
-          `[canonicalize-gate] Refusing to commit: code was edited and no test/build/lint has run this ` +
-          `session, and no success-contract was recorded. Record a contract (record_contract) or run ` +
-          `the repo's check, read the result, fix if red, THEN commit. Do not canonicalize on belief.`)
-      }
-    }
+// Canonicalize gate: a commit with code edited but the objective unproven is canonicalizing on
+// belief -- hard block. If a contract was recorded, require ITS specific SIGNAL to have run (the
+// goal-direction close): an unrelated `make lint` must not satisfy a `pytest x` signal. With no
+// contract, fall back to "any verify command ran since edits." `everEdited` tracks that code was
+// touched at all -- independent of the dirty set, which a verify command clears.
+function checkCanonicalize(cmd, sid) {
+  if (!COMMIT_CMD.test(cmd)) return
+  const s = dirty.get(sid)
+  const c = contract.get(sid)
+  const editedCode = !!s && s.everEdited
+  if (c && editedCode && !c.signalRan) {
+    throw new Error(
+      `[canonicalize-gate] Refusing to commit: the success-contract SIGNAL for this task ` +
+      `(\`${c.signal}\`) has not run since the code was edited. Run it, read the result, fix if ` +
+      `red, THEN commit. Do not canonicalize on belief.`)
+  }
+  if (!c && editedCode && !s.everVerified) {
+    throw new Error(
+      `[canonicalize-gate] Refusing to commit: code was edited and no test/build/lint has run this ` +
+      `session, and no success-contract was recorded. Record a contract (record_contract) or run ` +
+      `the repo's check, read the result, fix if red, THEN commit. Do not canonicalize on belief.`)
+  }
+}
 
-    for (const { re, reason } of BLOCKED) {
-      if (re.test(cmd)) {
-        throw new Error(
-          `[human-gate] Blocked: ${reason}\nCommand: ${cmd}\n` +
-          `This action is irreversible and gated to the human. Do not retry it another ` +
-          `way. State the exact command and hand it back.`)
-      }
+// Human-gate: the irreversible/publishing commands are gated to the human (policy.py is the source).
+function checkHumanGate(cmd) {
+  for (const { re, reason } of BLOCKED) {
+    if (re.test(cmd)) {
+      throw new Error(
+        `[human-gate] Blocked: ${reason}\nCommand: ${cmd}\n` +
+        `This action is irreversible and gated to the human. Do not retry it another ` +
+        `way. State the exact command and hand it back.`)
     }
-  },
+  }
+}
 
-  "tool.execute.after": async (input, output) => {
-    const sid = input.sessionID
-    if (input.tool === "edit" || input.tool === "write") {
-      const file = String(input?.args?.filePath ?? "")
-      if (CODE_EXT && CODE_EXT.test(file)) mark(sid, file)
-    } else if (input.tool === "record_contract") {
-      // Capture the SIGNAL so the canonicalize gate can require THAT specific check, not any verify.
-      const sig = output?.metadata?.signal
-      if (sig) contract.set(sid, { signal: String(sig), signalRan: false })
-    } else if (input.tool === "bash") {
-      const cmd = String(input?.args?.command ?? "")
-      if (VERIFY_CMD && VERIFY_CMD.test(cmd)) clearVerified(sid)
-      const c = contract.get(sid)
-      if (c && commandMatchesSignal(cmd, c.signal)) c.signalRan = true
-    }
-  },
+function gateBefore(input, output) {
+  if (input.tool === "read") { checkReadLoop(input, output); return }
+  if (input.tool !== "bash") return
+  const cmd = String(output?.args?.command ?? "")
+  if (!cmd) return
+  checkProtectedBranch(cmd)
+  checkCanonicalize(cmd, input.sessionID)
+  checkHumanGate(cmd)
+}
 
-  "experimental.text.complete": async (input, output) => {
-    const s = dirty.get(input.sessionID)
-    if (!s || s.verifiedSince || s.files.size === 0) return
-    const files = [...s.files].slice(0, 6).join(", ")
+// tool.execute.after handlers, keyed by tool. Dispatching a map keeps each gate's branch surface
+// flat and the hook readable; adding a handler is one entry, not another else-if.
+const _afterHandlers = {
+  edit: (input) => _afterEdit(input),
+  write: (input) => _afterEdit(input),
+  record_contract: (input, output) => _afterContract(input, output),
+  bash: (input) => _afterBash(input),
+}
+
+function _afterEdit(input) {
+  const file = String(input?.args?.filePath ?? "")
+  if (CODE_EXT && CODE_EXT.test(file)) mark(input.sessionID, file)
+}
+
+function _afterContract(input, output) {
+  const sig = output?.metadata?.signal
+  if (sig) contract.set(input.sessionID, { signal: String(sig), signalRan: false })
+}
+
+function _afterBash(input) {
+  const cmd = String(input?.args?.command ?? "")
+  if (VERIFY_CMD && VERIFY_CMD.test(cmd)) clearVerified(input.sessionID)
+  const c = contract.get(input.sessionID)
+  if (c && commandMatchesSignal(cmd, c.signal)) c.signalRan = true
+}
+
+function gateAfter(input, output) {
+  _afterHandlers[input.tool]?.(input, output)
+}
+
+function verifyGate(input, output) {
+  const s = dirty.get(input.sessionID)
+  if (!s || s.verifiedSince || s.files.size === 0) return
+  const files = [...s.files].slice(0, 6).join(", ")
+  output.text +=
+    `\n\n---\n[verify-gate] Code was edited (${files}) but no test/build/lint has run ` +
+    `since. Ground "done" in a real signal: run the canonical check (make test / ` +
+    `make bench-e2e / the repo's own suite), read the result, and fix if red. Do not ` +
+    `report done on intent.`
+  // independent review, structural (producer != verifier), orchestrator-only (workers can't dispatch)
+  const agent = input?.agent ?? ""
+  if (agent === "build" || agent === "plan") {
     output.text +=
-      `\n\n---\n[verify-gate] Code was edited (${files}) but no test/build/lint has run ` +
-      `since. Ground "done" in a real signal: run the canonical check (make test / ` +
-      `make bench-e2e / the repo's own suite), read the result, and fix if red. Do not ` +
-      `report done on intent.`
-    // independent review, structural (producer != verifier), orchestrator-only (workers can't dispatch)
-    const agent = input?.agent ?? ""
-    if (agent === "build" || agent === "plan") {
-      output.text +=
-        `\n[verify-gate] Before accepting this, dispatch the @reviewer subagent on the diff ` +
-        `(independent read-only review). Fold its findings back in.`
-    }
-    s.verifiedSince = true
-  },
+      `\n[verify-gate] Before accepting this, dispatch the @reviewer subagent on the diff ` +
+      `(independent read-only review). Fold its findings back in.`
+  }
+  s.verifiedSince = true
+}
+
+export default async () => ({
+  "tool.execute.before": gateBefore,
+  "tool.execute.after": gateAfter,
+  "experimental.text.complete": verifyGate,
 })

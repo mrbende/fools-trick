@@ -78,6 +78,13 @@ test: ## full test suite: unit (bench parsers + lib) + config + live round-trip
 .PHONY: test-unit
 test-unit: ## fast offline unit tests only (no servers needed)
 	@$(S)/test.sh unit
+.PHONY: check-quality
+check-quality: ## the canonical quality gate (CC/cognitive/halstead/dead-code/duplication/types + coverage floor)
+	@python3 -m core.quality --root .
+.PHONY: bench-mutants
+bench-mutants: ## mutation testing: do the tests discriminate behavior changes? (opt-in, slow)
+	@.bench-venv/bin/mutmut run --paths-to-mutate core --runner "python -m unittest discover -s tests/core -p 'test_*.py' -q" 2>&1 | tail -20; \
+	 echo "--- survivors ---"; .bench-venv/bin/mutmut results 2>/dev/null | tail -5
 # SIZE=smoke|small|large|max controls sample count per eval (default small). e.g. make bench SIZE=smoke
 SIZE ?= small
 .PHONY: bench

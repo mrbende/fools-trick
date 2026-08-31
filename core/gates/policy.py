@@ -74,7 +74,7 @@ _CODE_EXT = re.compile(
     r"\.(py|js|ts|jsx|tsx|mjs|cjs|go|rs|c|h|cc|cpp|hpp|java|rb|sh|bash|lua|zig|swift|kt|scala|clj)$"
 )
 _VERIFY_CMD = re.compile(
-    r"\b(make\s+(test|check|bench|lint|build)|pytest|npm\s+test|"
+    r"\b(make\s+(test|check-quality|check|bench|lint|build)|pytest|npm\s+test|"
     r"npm\s+run\s+(test|build|lint|typecheck)|go\s+test|"
     r"cargo\s+(test|check|build|clippy)|ruff|eslint|tsc|mypy|shellcheck|bats)\b"
 )

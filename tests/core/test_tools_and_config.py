@@ -11,6 +11,7 @@ ROOT = os.path.abspath(os.path.join(os.path.dirname(__file__), "..", ".."))
 sys.path.insert(0, ROOT)
 
 from core import config as cfg_mod  # noqa: E402
+from core import config_emit as emit_mod  # noqa: E402 -- emitters live here after the config split
 from core.log.log import MemoryLog  # noqa: E402
 from core.log.thread import identity_resolver  # noqa: E402
 from core.tools import memory as tools  # noqa: E402
@@ -142,14 +143,14 @@ class TestConfig(unittest.TestCase):
 
     def test_shell_and_json_emitters(self):
         cfg = cfg_mod.load()
-        shell = cfg_mod._shell_exports(cfg)
+        shell = emit_mod._shell_exports(cfg)
         self.assertIn("export WORKER_URL=", shell)
         self.assertIn("export WORKER_KV=", shell)  # physics reaches the shell too
-        d = cfg_mod._as_dict(cfg)
+        d = emit_mod._as_dict(cfg)
         self.assertIsInstance(d["weights"]["candidates"], list)
 
     def test_env_emitter_carries_deploy(self):
-        env = cfg_mod._env_exports(cfg_mod.load())
+        env = emit_mod._env_exports(cfg_mod.load())
         self.assertIn("export FOOL_HOST=", env)      # rig deploy var
         self.assertIn("export NAS_MODELS=", env)
         self.assertIn("export WORKER_URL=", env)     # and method config
@@ -161,7 +162,7 @@ class TestConfig(unittest.TestCase):
             "agent": {"build": {"mode": "primary"}, "plan": {"mode": "primary"}},
             "compaction": {"auto": False},
         }
-        oc = cfg_mod.render_opencode(cfg, base)
+        oc = emit_mod.render_opencode(cfg, base)
         # config-derived provider block present, with URL/model/limits from the loader
         self.assertIn("fool-ds4", oc["provider"])
         self.assertIn("magus", oc["provider"])

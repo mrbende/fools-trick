@@ -70,9 +70,49 @@ def _parent_walker():
     return parent_of
 
 
+# Special-case handlers that don't take a model ToolContext (drain flushes the queue; trace reads
+# the opencode DB directly; tripcheck reads the rollup baseline). Each gets (payload, log).
+def _run_drain(payload: dict, log) -> None:
+    # not a model tool; it flushes the Redis write-stream into SQLite so a write is never parked in
+    # the ephemeral tier past a turn boundary.
+    print(json.dumps({"drained": log.drain()}))
+
+
+def _run_trace(payload: dict, log) -> None:
+    # the orchestrator's debugging instrument: reconstruct a session's trajectory without hand SQL.
+    from core.observe.trace import format_trace, trace_recent_subagents, trace_session
+    sid = payload.get("sessionID") or payload.get("session")
+    if sid:
+        t = trace_session(sid, cwd=cfg_mod._ROOT)
+        print(json.dumps({"title": f"trace {sid[-12:]}", "output": format_trace(t), "metadata": {"session": sid}}))
+    else:
+        traces = trace_recent_subagents(cwd=cfg_mod._ROOT, limit=int(payload.get("limit") or 5))
+        out = "\n\n".join(format_trace(t) for t in traces)
+        print(json.dumps({"title": "recent subagents", "output": out, "metadata": {"count": len(traces)}}))
+
+
+def _run_tripcheck(payload: dict, log) -> None:
+    # the trip-wire comparison for a task against its recent baseline; a regression becomes a signal
+    # the agent can act on mid-task, not a post-hoc `make observe` read.
+    from core.observe import check, task_rollups
+    rs = task_rollups(cfg_mod._ROOT, limit=8)
+    if len(rs) < 2:
+        print(json.dumps({"title": "tripcheck", "output": "not enough tasks for a baseline",
+                          "metadata": {"fired": 0}}))
+        return
+    wires = check(rs[0], rs[1:])
+    fired = [w for w in wires if w.fired]
+    out = "\n".join(("FIRED " + w.name + ": " + w.detail) if w.fired else ("ok " + w.name) for w in wires)
+    print(json.dumps({"title": f"tripcheck ({len(fired)} fired)", "output": out,
+                      "metadata": {"fired": len(fired), "latest": rs[0].session_id}}))
+
+
+_SPECIAL = {"drain": _run_drain, "trace": _run_trace, "tripcheck": _run_tripcheck}
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fools-trick tools")
-    parser.add_argument("tool", choices=sorted([*_TOOLS, "drain", "trace", "tripcheck"]))
+    parser.add_argument("tool", choices=sorted([*_TOOLS, *_SPECIAL]))
     parser.add_argument("--json", default="{}", help="tool args as a JSON object")
     parser.add_argument("--session", default="", help="ToolContext sessionID")
     parser.add_argument("--agent", default="", help="ToolContext agent")
@@ -92,42 +132,8 @@ def main(argv: list[str] | None = None) -> int:
         redis_url=cfg.redis_url,
         resolve_thread=resolver.resolve,
     )
-    # drain is not a model tool; it flushes the Redis write-stream into SQLite so a write is never
-    # parked in the ephemeral tier past a turn boundary (the autonomous-drain fix).
-    if args.tool == "drain":
-        moved = log.drain()
-        log.close()
-        print(json.dumps({"drained": moved}))
-        return 0
-    # trace reads the opencode DB directly (no MemoryLog needed). It is the orchestrator's
-    # debugging instrument: reconstruct a session's trajectory without hand-writing SQL.
-    if args.tool == "trace":
-        from core.observe.trace import format_trace, trace_recent_subagents, trace_session
-        sid = payload.get("sessionID") or payload.get("session")
-        if sid:
-            t = trace_session(sid, cwd=cfg_mod._ROOT)
-            print(json.dumps({"title": f"trace {sid[-12:]}", "output": format_trace(t), "metadata": {"session": sid}}))
-        else:
-            traces = trace_recent_subagents(cwd=cfg_mod._ROOT, limit=int(payload.get("limit") or 5))
-            out = "\n\n".join(format_trace(t) for t in traces)
-            print(json.dumps({"title": "recent subagents", "output": out, "metadata": {"count": len(traces)}}))
-        log.close()
-        return 0
-    # tripcheck: run the trip-wire comparison for a task against its recent baseline, and (for the
-    # current root session) report any fired wires with their detail. This makes a regression a
-    # signal the agent can act on mid-task, not a post-hoc `make observe` read.
-    if args.tool == "tripcheck":
-        from core.observe import check, task_rollups
-        rs = task_rollups(cfg_mod._ROOT, limit=8)
-        if len(rs) < 2:
-            print(json.dumps({"title": "tripcheck", "output": "not enough tasks for a baseline", "metadata": {"fired": 0}}))
-            log.close()
-            return 0
-        wires = check(rs[0], rs[1:])
-        fired = [w for w in wires if w.fired]
-        out = "\n".join(("FIRED " + w.name + ": " + w.detail) if w.fired else ("ok " + w.name) for w in wires)
-        print(json.dumps({"title": f"tripcheck ({len(fired)} fired)", "output": out,
-                          "metadata": {"fired": len(fired), "latest": rs[0].session_id}}))
+    if args.tool in _SPECIAL:
+        _SPECIAL[args.tool](payload, log)
         log.close()
         return 0
     ctx = ToolContext(sessionID=args.session, agent=args.agent, callID=args.call_id)

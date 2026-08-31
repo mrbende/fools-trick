@@ -72,16 +72,26 @@ def plan_worker_prune(
         return decision
 
     # gather live (uncompacted, completed) tool results in stream order
-    live: list[tuple[Turn, "object"]] = []
-    for t in turns:
-        for tr in t.tool_results:
-            if not tr.compacted:
-                live.append((t, tr))
+    live: list[tuple[Turn, "object"]] = [
+        (t, tr) for t in turns for tr in t.tool_results if not tr.compacted
+    ]
+    prunable = [p for p in live[: max(0, len(live) - keep_recent)] if p[1].call_id not in pinned]
 
-    prunable = live[: max(0, len(live) - keep_recent)]
-    prunable = [(t, tr) for (t, tr) in prunable if tr.call_id not in pinned]
+    _evict_passes(prunable, distilled, input_tokens(turns), input_budget, decision)
+    return decision
 
-    budget = input_tokens(turns)
+
+def _evict_passes(
+    prunable: list[tuple[Turn, "object"]],
+    distilled: set[str],
+    budget: int,
+    input_budget: int,
+    decision: EvictionDecision,
+) -> None:
+    """Run the two eviction passes against the prunable results until under budget.
+
+    `_evict` is closed over the running budget + decision so each pass shares the same accounting.
+    """
 
     def _evict(tr) -> None:
         nonlocal budget
@@ -111,8 +121,6 @@ def plan_worker_prune(
         if budget <= input_budget:
             break
         _evict(tr)
-
-    return decision
 
 
 def plan_slide(

@@ -74,9 +74,9 @@ def task_rollups(cwd: str, limit: int = 50) -> list[TaskRollup]:
 def _rollup(rows: list[dict], root_id: str) -> TaskRollup:
     root = next((r for r in rows if r["id"] == root_id), {})
     subs = [r for r in rows if r.get("parent_id") == root_id]
-    tin = sum(r.get("tokens_input") or 0 for r in rows)
-    tout = sum(r.get("tokens_output") or 0 for r in rows)
-    treas = sum(r.get("tokens_reasoning") or 0 for r in rows)
+    # three token channels share one summation pattern
+    keys = ("tokens_input", "tokens_output", "tokens_reasoning")
+    tot = {k: sum(r.get(k) or 0 for r in rows) for k in keys}
     created = root.get("time_created") or 0
     updated = root.get("time_updated") or 0
     return TaskRollup(
@@ -84,8 +84,9 @@ def _rollup(rows: list[dict], root_id: str) -> TaskRollup:
         agent=root.get("agent", ""),
         provider=root.get("prov", ""),
         subagents=len(subs),
-        tokens_input=tin, tokens_output=tout, tokens_reasoning=treas,
-        tokens_total=tin + tout + treas,
+        tokens_input=tot["tokens_input"], tokens_output=tot["tokens_output"],
+        tokens_reasoning=tot["tokens_reasoning"],
+        tokens_total=tot["tokens_input"] + tot["tokens_output"] + tot["tokens_reasoning"],
         wall_s=max(0.0, (updated - created) / 1000.0),
         model_ids=sorted({r.get("mdl") for r in rows if r.get("mdl")}),
     )
