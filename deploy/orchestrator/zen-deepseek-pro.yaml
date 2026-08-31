@@ -1,0 +1,10 @@
+# Orchestrator backend: DeepSeek V4 Pro via OpenCode Zen (cloud gateway; serves nothing locally).
+# Selected by deploy.yaml's `orchestrator: zen-deepseek-pro`. Needs ZEN_API_KEY in the environment.
+name: zen-deepseek-pro
+kind: cloud
+model: deepseek-v4-pro
+base_url: https://opencode.ai/zen
+api_key_env: ZEN_API_KEY
+context: 1000000
+max_output: 192000     # == decode_headroom; validate() requires headroom >= max_output
+effort: high           # honored on the self-hosted path only; Zen V4 defaults to high server-side

@@ -5,16 +5,25 @@
 
 # input + decode_headroom must fit a worker slot (validated against the backend's ctx_per_slot).
 memory:
-  window_input_tokens: 160000
-  decode_headroom: 96000
-  worker_input_tokens: 18000
-  worker_decode_headroom: 14000
-  worker_keep_recent: 3
-  worker_tool_result_cap: 8000  # one read can never alone overflow the slot; overage spills to the log
+  window_input_tokens: 640000     # aggressive: exploit DeepSeek V4 Pro's 1M context on Zen
+  decode_headroom: 192000         # must be >= orchestrator max_output; 640000+192000 < 1000000
+  worker_input_tokens: 32000      # disciplined worker input window: keeps subagents ephemeral
+  worker_decode_headroom: 16000   # 32000+16000 = 48000 <= ctx_per_slot (131072), fits with room
+  worker_keep_recent: 4           # most-recent raw tool results never pruned
+  worker_tool_result_cap: 24000   # big slot lets a large read land whole; overage spills to the log
 
 # The agent roster. .opencode/agents/<worker>.md, opencode.base.json's task perms, and the test
 # roster must agree with this (a contract test asserts it).
 agents:
   primaries: [build, plan]
   workers: [explore, general, reviewer]
+
+# The library (attune-library): the agent's own corpus. The API serves search+read; the NAS inbox
+# is the ETL handoff. Content search embeds the query with fool's embedding service (down while the
+# agent's orchestrator is up -- the contention), so search is health-gated; query/read/fetch are
+# pure SQL or HTTP and always available.
+library:
+  api_url: http://127.0.0.1:8082          # attune-library corpus API (search/read/query/fetch)
+  embed_url: http://fool:8001             # embed service on fool's GPU (library-inference-recipe)
+  inbox_dir: /mnt/empress/library/inbox   # NAS drop-dir the ETL watches (make ingest)
 

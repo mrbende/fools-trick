@@ -23,8 +23,8 @@ probe() {
 
 say "endpoint health"
 probe "worker" "$WORKER_URL" "$WORKER_MODEL_ID"
-if fool_reachable && { http_ok "$FOOL_URL/v1/models" || http_ok "$FOOL_URL/health"; }; then
-  probe "orchestrator" "$FOOL_URL" "$FOOL_MODEL_ID"
+if fool_reachable && { http_ok "$ORCHESTRATOR_URL/v1/models" || http_ok "$ORCHESTRATOR_URL/health"; }; then
+  probe "orchestrator" "$ORCHESTRATOR_URL" "$ORCHESTRATOR_MODEL_ID"
 else
   warn "orchestrator not serving; skipping its completion probe"
 fi

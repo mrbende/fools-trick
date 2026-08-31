@@ -2,14 +2,34 @@
 // source of truth, loaded once at startup; the verify-state machine is small enough to run in
 // the adapter. Policy is owned in core/gates/policy.py; this file is plumbing.
 
-import { loadBlocked } from "./bridge.js"
-
-const CODE_EXT = /\.(py|js|ts|jsx|tsx|mjs|cjs|go|rs|c|h|cc|cpp|hpp|java|rb|sh|bash|lua|zig|swift|kt|scala|clj)$/
-const VERIFY_CMD = /\b(make\s+(test|check|bench|lint|build)|pytest|npm\s+test|npm\s+run\s+(test|build|lint|typecheck)|go\s+test|cargo\s+(test|check|build|clippy)|ruff|eslint|tsc|mypy|shellcheck|bats)\b/
+import { loadBlocked, loadProtectedBranches, loadGatePatterns, currentBranch } from "./bridge.js"
 
 const BLOCKED = loadBlocked()
-const dirty = new Map() // sessionID -> { files:Set, verifiedSince:bool }
-const reads = new Map() // sessionID -> Map(path -> count); the read-loop sensor
+const PROTECTED = loadProtectedBranches()
+// Code-file and verify-command regexes come from the Python policy (single source of truth), so the
+// gate never drifts from what test_gates.py asserts. If the policy is unreadable, both are null and
+// the verify/canonicalize gates fail safe (treat nothing as code, so no spurious blocks).
+const { CODE_EXT, VERIFY_CMD } = loadGatePatterns()
+const dirty = new Map()    // sessionID -> { files:Set, verifiedSince:bool, everVerified:bool }
+const reads = new Map()    // sessionID -> Map(path -> count); the read-loop sensor
+const contract = new Map() // sessionID -> { signal:string, signalRan:bool }; the goal-direction gate
+
+// Does a run bash command satisfy the recorded contract SIGNAL? The SIGNAL is the exact check the
+// orchestrator named as "done" (record_contract). We match leniently: the command contains the
+// signal's core (first token/path), so `pytest tests/x.py -q` still satisfies signal `pytest tests/x.py`.
+function commandMatchesSignal(cmd, signal) {
+  if (!signal) return false
+  const core = signal.trim().split(/\s+/).slice(0, 3).join(" ")   // e.g. "pytest tests/test_auth.py"
+  return cmd.includes(core) || cmd.includes(signal.trim())
+}
+
+// The canonicalize gate: a git commit is the point work becomes canonical. Hybrid enforcement --
+// hard-block a commit with code edited and a verify command NEVER run since (canonicalizing on pure
+// belief), nudge when a verify ran but may be stale. Amend/message-only paths still count as commits.
+const COMMIT_CMD = /\bgit\s+(-[^\s]+\s+)*commit\b/
+// A push targeting a branch: capture the ref so a push to a protected branch is caught even though
+// push itself is already human-gated (this gives the protected-branch reason, not a generic gate).
+const PUSH_CMD = /\bgit\s+push\b/
 
 // Re-reading the same path past this is the loop the substantive run exposed (a worker read
 // redis.py 28x). A ranged re-read (different offset) is legitimate; the block only fires when the
@@ -18,10 +38,15 @@ const READ_LOOP_THRESHOLD = 3
 
 function mark(sid, file) {
   let s = dirty.get(sid)
-  if (!s) { s = { files: new Set(), verifiedSince: true }; dirty.set(sid, s) }
-  s.files.add(file); s.verifiedSince = false
+  if (!s) { s = { files: new Set(), verifiedSince: true, everVerified: false, everEdited: false }; dirty.set(sid, s) }
+  s.files.add(file); s.verifiedSince = false; s.everEdited = true
 }
-function clearVerified(sid) { const s = dirty.get(sid); if (s) { s.verifiedSince = true; s.files.clear() } }
+// A verify command ran: clears the dirty set (verifiedSince) and records that verification has run
+// at least once this session (everVerified) -- the canonicalize gate hard-blocks only when it hasn't.
+function clearVerified(sid) {
+  const s = dirty.get(sid)
+  if (s) { s.verifiedSince = true; s.everVerified = true; s.files.clear() }
+}
 
 // The read-loop key: path + offset + limit. A different line range is a different window (not a
 // loop); an identical re-read of the same span is the repeat we're blocking.
@@ -55,6 +80,43 @@ export default async () => ({
     if (input.tool !== "bash") return
     const cmd = String(output?.args?.command ?? "")
     if (!cmd) return
+
+    // Protected-branch gate: never commit to or push a protected branch directly. Work on feature
+    // branches; integration is a human PR/merge, not a direct agent commit. Checked before the
+    // BLOCKED loop so the message names the real reason (protected branch), not a generic push gate.
+    if (COMMIT_CMD.test(cmd) || PUSH_CMD.test(cmd)) {
+      const branch = currentBranch()
+      if (branch && PROTECTED.has(branch)) {
+        throw new Error(
+          `[protected-branch] '${branch}' is always protected -- no direct commit or push. ` +
+          `Create/switch to a feature branch (git switch -c <feature>), commit there, and hand the ` +
+          `merge back to the human as a PR. Command: ${cmd}`)
+      }
+    }
+
+    // Canonicalize gate: a commit with code edited but the objective unproven is canonicalizing on
+    // belief -- hard block. If a contract was recorded, require ITS specific SIGNAL to have run (the
+    // goal-direction close): an unrelated `make lint` must not satisfy a `pytest x` signal. With no
+    // contract, fall back to "any verify command ran since edits." `editedThisSession` tracks that
+    // code was touched at all -- independent of the dirty set, which a verify command clears.
+    if (COMMIT_CMD.test(cmd)) {
+      const s = dirty.get(input.sessionID)
+      const c = contract.get(input.sessionID)
+      const editedCode = !!s && s.everEdited
+      if (c && editedCode && !c.signalRan) {
+        throw new Error(
+          `[canonicalize-gate] Refusing to commit: the success-contract SIGNAL for this task ` +
+          `(\`${c.signal}\`) has not run since the code was edited. Run it, read the result, fix if ` +
+          `red, THEN commit. Do not canonicalize on belief.`)
+      }
+      if (!c && editedCode && !s.everVerified) {
+        throw new Error(
+          `[canonicalize-gate] Refusing to commit: code was edited and no test/build/lint has run this ` +
+          `session, and no success-contract was recorded. Record a contract (record_contract) or run ` +
+          `the repo's check, read the result, fix if red, THEN commit. Do not canonicalize on belief.`)
+      }
+    }
+
     for (const { re, reason } of BLOCKED) {
       if (re.test(cmd)) {
         throw new Error(
@@ -65,13 +127,20 @@ export default async () => ({
     }
   },
 
-  "tool.execute.after": async (input) => {
+  "tool.execute.after": async (input, output) => {
     const sid = input.sessionID
     if (input.tool === "edit" || input.tool === "write") {
       const file = String(input?.args?.filePath ?? "")
-      if (CODE_EXT.test(file)) mark(sid, file)
+      if (CODE_EXT && CODE_EXT.test(file)) mark(sid, file)
+    } else if (input.tool === "record_contract") {
+      // Capture the SIGNAL so the canonicalize gate can require THAT specific check, not any verify.
+      const sig = output?.metadata?.signal
+      if (sig) contract.set(sid, { signal: String(sig), signalRan: false })
     } else if (input.tool === "bash") {
-      if (VERIFY_CMD.test(String(input?.args?.command ?? ""))) clearVerified(sid)
+      const cmd = String(input?.args?.command ?? "")
+      if (VERIFY_CMD && VERIFY_CMD.test(cmd)) clearVerified(sid)
+      const c = contract.get(sid)
+      if (c && commandMatchesSignal(cmd, c.signal)) c.signalRan = true
     }
   },
 
@@ -84,6 +153,13 @@ export default async () => ({
       `since. Ground "done" in a real signal: run the canonical check (make test / ` +
       `make bench-e2e / the repo's own suite), read the result, and fix if red. Do not ` +
       `report done on intent.`
+    // independent review, structural (producer != verifier), orchestrator-only (workers can't dispatch)
+    const agent = input?.agent ?? ""
+    if (agent === "build" || agent === "plan") {
+      output.text +=
+        `\n[verify-gate] Before accepting this, dispatch the @reviewer subagent on the diff ` +
+        `(independent read-only review). Fold its findings back in.`
+    }
     s.verifiedSince = true
   },
 })

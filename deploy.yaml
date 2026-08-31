@@ -4,9 +4,12 @@
 # supplies the endpoint (base_url/model/context/concurrency) and its serving physics; config.yaml
 # (the method) supplies the behavior. Toggle a model or a hardware/cloud target by changing the
 # pointer here and running `make config && make up`. Env vars override any value here.
-
-orchestrator: spark-gb10
-worker: 3080ti-qwen27
+#
+# Active rig is Zen cloud (`make start`). Reverting to self-hosted is a PAIRED change: the current
+# config.yaml window (640k/192k) exceeds spark-gb10's 384k context, so flip these pointers AND drop
+# the memory window back (160k/96k, 18k/14k, cap 8k) or validation fails.
+orchestrator: zen-deepseek-pro
+worker: zen-deepseek-flash
 
 # Rig-shared topology: the same regardless of which backend serves.
 topology:

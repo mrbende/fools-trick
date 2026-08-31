@@ -23,8 +23,15 @@ BLOCKED: list[tuple[str, str]] = [
     (r"\bgit\s+rebase\b.*\b(-i|--interactive)\b",
      "interactive rebase rewrites history. Human-gated."),
     (r"\bgit\s+filter-branch\b|\bgit\s+filter-repo\b", "history rewrite is human-gated."),
-    (r"\bterraform\s+(apply|destroy)\b",
-     "terraform apply/destroy changes real infra. Human-gated."),
+    (r"\b(terraform|terragrunt|tofu)\b",
+     "all terraform/infra-as-code operations are human-run. Hand the exact command back to the human to run."),
+    # AWS: read-only (describe/list/get/ls) is allowed -- the agent needs it to understand infra
+    # state. Only clearly-mutating verbs are hard-blocked; the gray area is covered by the guide
+    # (AGENTS.md), which tells the agent to hand back anything that creates/changes/destroys.
+    (r"\baws\s+\S+\s+(create|delete|put|modify|update|terminate|run-instances|start|stop|reboot|"
+     r"attach|detach|associate|disassociate|authorize|revoke|deploy|destroy|remove|register|"
+     r"deregister|enable|disable|reset|restore|import|apply|set-|tag-|untag-)\S*",
+     "this AWS command creates/changes/destroys a resource. Hand the exact command back to the human to run."),
     (r"\b(kubectl|helm)\s+(apply|delete|destroy|uninstall)\b",
      "cluster mutation is human-gated."),
     (r"\b(pulumi\s+up|pulumi\s+destroy)\b",
@@ -41,6 +48,26 @@ BLOCKED: list[tuple[str, str]] = [
 ]
 
 _BLOCKED_RE = [(re.compile(src, re.IGNORECASE), reason) for src, reason in BLOCKED]
+
+# Always-protected branches: the agent must never commit to or push these directly. Work happens on
+# feature branches; integration into a protected branch is a human-gated action (PR/merge), never a
+# direct commit or push by the agent. Matched case-insensitively against the current branch name.
+PROTECTED_BRANCHES: tuple[str, ...] = ("master", "main", "staging")
+
+
+def is_protected_branch(branch: str) -> bool:
+    return bool(branch) and branch.strip().lower() in PROTECTED_BRANCHES
+
+
+def export_protected_branches_json() -> str:
+    """Emit the protected-branch list for the in-process JS gate to load once."""
+    return json.dumps(list(PROTECTED_BRANCHES))
+
+
+def export_gate_patterns_json() -> str:
+    """Emit the code-file and verify-command patterns for the in-process JS gate, so the Python
+    policy is the single source of truth (not a hand-mirrored copy in plugin_gates.js)."""
+    return json.dumps({"code_ext": _CODE_EXT.pattern, "verify_cmd": _VERIFY_CMD.pattern})
 
 # Docs/data deliberately excluded so editing a README never demands a test run.
 _CODE_EXT = re.compile(

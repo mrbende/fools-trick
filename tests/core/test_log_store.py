@@ -64,6 +64,21 @@ class TestEpisodeStore(unittest.TestCase):
     def test_punctuation_query_does_not_raise(self):
         self.assertIsInstance(self.store.search(thread="A", query="!!! ??? ***"), list)
 
+    def test_scoped_search_by_role_agent_and_seq(self):
+        # decisions vs tool results are separable; a seq range scopes to a window
+        self.store.append(thread="S", session="s", agent="build", role="memory",
+                          content="chose the q8_0 KV cache", ts=100)
+        self.store.append(thread="S", session="s", agent="explore", role="tool",
+                          content="read output mentioning the q8_0 KV cache", ts=200)
+        self.store.append(thread="S", session="s", agent="general", role="memory",
+                          content="a later q8_0 KV cache decision", ts=300)
+        by_role = self.store.search(thread="S", query="q8_0 KV", role="memory")
+        self.assertTrue(all(e.role == "memory" for e in by_role))
+        by_agent = self.store.search(thread="S", query="q8_0 KV", agent="explore")
+        self.assertTrue(all(e.agent == "explore" for e in by_agent))
+        seqs = [e.seq for e in self.store.search(thread="S", query="q8_0 KV", after_seq=1)]
+        self.assertTrue(all(s > 1 for s in seqs))
+
 
 if __name__ == "__main__":
     unittest.main()

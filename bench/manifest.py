@@ -57,7 +57,7 @@ def main():
     ap.add_argument("--size", default="small")
     ap.add_argument("--seed", type=int, default=42)
     ap.add_argument("--worker-url", default=os.environ.get("WORKER_URL", ""))
-    ap.add_argument("--fool-url", default=os.environ.get("FOOL_URL", ""))
+    ap.add_argument("--fool-url", default=os.environ.get("ORCHESTRATOR_URL", ""))
     ap.add_argument("--out", required=True, help="dir to write manifest-<stamp>.json")
     a = ap.parse_args()
     mf = build(a.stamp, a.size, a.seed, a.worker_url, a.fool_url)

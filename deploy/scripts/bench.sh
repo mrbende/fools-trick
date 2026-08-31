@@ -100,15 +100,15 @@ preflight() {
   say "fools-trick benchmark  (stamp $STAMP, size=$SIZE)"
   local w f
   serving "$WORKER_URL" && w="up" || w="DOWN"
-  serving "$FOOL_URL" && f="up" || f="DOWN"
+  serving "$ORCHESTRATOR_URL" && f="up" || f="DOWN"
   dim "  worker (magus)      $WORKER_URL   [$w]"
-  dim "  orchestrator (fool) $FOOL_URL   [$f]"
+  dim "  orchestrator (fool) $ORCHESTRATOR_URL   [$f]"
   [ "$w" = "DOWN" ] && warn "worker down -> worker suites will be skipped"
   [ "$f" = "DOWN" ] && warn "orchestrator down -> fool + e2e suites will be skipped/fail"
   dim "  results -> $BENCH_DIR/  (size=$SIZE)"
   # Capture the run manifest up front (git state + live node shapes) so the run is reproducible.
   "$PY" "$MANIFEST" --stamp "$STAMP" --size "$SIZE" --worker-url "$WORKER_URL" \
-    --fool-url "$FOOL_URL" --out "$BENCH_DIR" >/dev/null 2>&1 || true
+    --fool-url "$ORCHESTRATOR_URL" --out "$BENCH_DIR" >/dev/null 2>&1 || true
   echo
 }
 
@@ -139,9 +139,9 @@ speed_worker() {
     --out "$BENCH_DIR/speed-worker-$STAMP.jsonl" --md "$BENCH_DIR/speed-$STAMP.md" --logfile "$LOG"
 }
 speed_fool() {
-  serving "$FOOL_URL" || { warn "orchestrator not serving; skipping speed-fool"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator not serving; skipping speed-fool"; return; }
   step "speed[fool] TTFT/prefill/decode/cache"
-  "$PY" "$SPEED" --url "$FOOL_URL" --model "$FOOL_MODEL_ID" --engine vllm \
+  "$PY" "$SPEED" --url "$ORCHESTRATOR_URL" --model "$ORCHESTRATOR_MODEL_ID" --engine vllm \
     --depths 1024 16384 65536 131072 --concurrency 1 --reps 1 --timeout 1800 \
     --out "$BENCH_DIR/speed-fool-$STAMP.jsonl" --md "$BENCH_DIR/speed-$STAMP.md" --logfile "$LOG"
 }
@@ -150,7 +150,6 @@ speed_fool() {
 size_n() { case "$SIZE" in smoke) echo 5;; small) echo 25;; large) echo 200;; max) echo 0;; *) echo 25;; esac; }
 # Wrappers for the two URL conventions: capability.py/safety.py want the URL WITH /v1;
 # eval.py (code/tools/deep) adds /v1 itself, so it wants the bare base.
-CAP="$OPENCODE_PROJECT_DIR/bench/capability.py"
 SAFETY="$OPENCODE_PROJECT_DIR/bench/safety.py"
 LONGCTX="$OPENCODE_PROJECT_DIR/bench/longctx.py"
 WORKER_TOK="${WORKER_TOKENIZER:-Qwen/Qwen3.8-27B}"
@@ -166,10 +165,10 @@ capability_worker() {
     --tokenizer "$WORKER_TOK" --tier gen --size "$SIZE" --out "$BENCH_DIR/cap-worker-$STAMP"
 }
 capability_fool() {
-  serving "$FOOL_URL" || { warn "orchestrator down; skip capability-fool"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator down; skip capability-fool"; return; }
   step "capability[fool] gen + MC (mmlu/arc/hellaswag/winogrande loglikelihood)"
   local tier="gen"; [ "$SIZE" = "max" ] || [ "$SIZE" = "large" ] && tier="full"
-  "$PY" "$CAP" --node fool --url "$FOOL_URL/v1" --model "$FOOL_MODEL_ID" \
+  "$PY" "$CAP" --node fool --url "$ORCHESTRATOR_URL/v1" --model "$ORCHESTRATOR_MODEL_ID" \
     --tokenizer "$FOOL_TOK" --tier "$tier" --size "$SIZE" --out "$BENCH_DIR/cap-fool-$STAMP"
 }
 
@@ -191,23 +190,23 @@ code_tools_worker() {
 safety_worker() {
   serving "$WORKER_URL" || { warn "worker down; skip safety"; return; }
   worker_fit_ok || { warn "worker spills to CPU; skip safety (would run CPU-bound)"; return; }
-  serving "$FOOL_URL" || { warn "orchestrator (judge) down; skip safety"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator (judge) down; skip safety"; return; }
   local jl="$BENCH_DIR/safety-$STAMP.jsonl" n; n="$(size_n)"; [ "$n" = "0" ] && n=100
   for ds in advbench jbb_harmful xstest; do
     step "safety[$ds] target=worker judge=fool"
     "$PY" "$SAFETY" --dataset "$ds" --url "$WORKER_URL" --model "$WORKER_MODEL_ID" \
-      --judge-url "$FOOL_URL" --judge-model "$FOOL_MODEL_ID" --n "$n" \
+      --judge-url "$ORCHESTRATOR_URL" --judge-model "$ORCHESTRATOR_MODEL_ID" --n "$n" \
       --out "$jl" --logfile "$LOG"
   done
 }
 
 # Long-context passive retrieval (deep needle) + agentic delegation-at-depth (longctx).
 longctx_fool() {
-  serving "$FOOL_URL" || { warn "orchestrator down; skip long-context"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator down; skip long-context"; return; }
   local depths="8192 32768"; [ "$SIZE" = "large" ] && depths="32768 131072"
   [ "$SIZE" = "max" ] && depths="32768 131072 262144 370000"
   step "deep needle (passive retrieval) at $depths"
-  "$PY" "$EVAL" deep --url "$FOOL_URL" --model "$FOOL_MODEL_ID" --lengths $depths --n 1 \
+  "$PY" "$EVAL" deep --url "$ORCHESTRATOR_URL" --model "$ORCHESTRATOR_MODEL_ID" --lengths $depths --n 1 \
     --timeout 3600 --out "$BENCH_DIR/eval-fool-$STAMP.jsonl" --md "$BENCH_DIR/eval-$STAMP.md" --logfile "$LOG"
   command -v opencode >/dev/null || { warn "opencode missing; skip longctx agentic"; return; }
   local ld="32000"; [ "$SIZE" = "large" ] && ld="32000 100000"; [ "$SIZE" = "max" ] && ld="32000 100000 200000"
@@ -218,7 +217,7 @@ longctx_fool() {
 
 e2e_run() {
   command -v opencode >/dev/null || { warn "opencode missing; skip e2e"; return; }
-  serving "$FOOL_URL" || { warn "orchestrator down; skip e2e"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator down; skip e2e"; return; }
   step "e2e delegation (opencode fan-out, DB-verified)"
   "$PY" "$E2E" --project "$OPENCODE_PROJECT_DIR" --want-provider magus \
     --out "$BENCH_DIR/e2e-$STAMP.jsonl" --md "$BENCH_DIR/e2e-$STAMP.md" --logfile "$LOG"
@@ -230,7 +229,7 @@ PRUNE="$OPENCODE_PROJECT_DIR/bench/prune.py"
 prune_run() {
   command -v opencode >/dev/null || { warn "opencode missing; skip prune"; return; }
   serving "$WORKER_URL" || { warn "worker down; skip prune"; return; }
-  serving "$FOOL_URL" || { warn "orchestrator down; skip prune (dispatch needs it)"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator down; skip prune (dispatch needs it)"; return; }
   # Enough files to push worker input past WORKER_INPUT_TOKENS with margin; scale with SIZE.
   local files; case "$SIZE" in smoke) files=6;; small) files=8;; large) files=12;; max) files=16;; *) files=8;; esac
   step "prune (subagent competency under eviction) -- $files files"
@@ -240,13 +239,13 @@ prune_run() {
 
 # Per-result cap: a worker reads one file larger than the cap and must recover the spilled tail
 # by seq (or a ranged read) -- proving a single oversized read never overflows the slot.
-CAP="$OPENCODE_PROJECT_DIR/bench/cap.py"
+CAP_BENCH="$OPENCODE_PROJECT_DIR/bench/cap.py"
 cap_run() {
   command -v opencode >/dev/null || { warn "opencode missing; skip cap"; return; }
   serving "$WORKER_URL" || { warn "worker down; skip cap"; return; }
   local toks; case "$SIZE" in smoke) toks=20000;; small) toks=24000;; large) toks=40000;; max) toks=64000;; *) toks=24000;; esac
   step "cap (recover a read past the per-result cap) -- ~$toks tok file"
-  "$PY" "$CAP" --project "$OPENCODE_PROJECT_DIR" --file-tokens "$toks" \
+  "$PY" "$CAP_BENCH" --project "$OPENCODE_PROJECT_DIR" --file-tokens "$toks" \
     --out "$BENCH_DIR/cap-$STAMP.jsonl" --logfile "$LOG"
 }
 
@@ -254,7 +253,7 @@ cap_run() {
 # thread-root resolution across distinct session ids (the historically-silent-broken path).
 xagent_run() {
   command -v opencode >/dev/null || { warn "opencode missing; skip xagent"; return; }
-  serving "$FOOL_URL" || { warn "orchestrator down; skip xagent"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator down; skip xagent"; return; }
   serving "$WORKER_URL" || { warn "worker down; skip xagent"; return; }
   step "memory cross-agent (subagent write -> fresh-session recall)"
   "$PY" "$MEMORY" xagent --project "$OPENCODE_PROJECT_DIR" --timeout 2400 \
@@ -268,13 +267,13 @@ xagent_run() {
 MEMORY="$OPENCODE_PROJECT_DIR/bench/memory.py"
 memory_ab() {
   command -v opencode >/dev/null || { warn "opencode missing; skip memory"; return; }
-  serving "$FOOL_URL" || { warn "orchestrator down; skip memory (judge+session need it)"; return; }
+  serving "$ORCHESTRATOR_URL" || { warn "orchestrator down; skip memory (judge+session need it)"; return; }
   local bury; case "$SIZE" in smoke) bury=12;; small) bury=30;; large) bury=60;; max) bury=100;; *) bury=30;; esac
   export MEMORY_BENCH_DIR="$BENCH_DIR/membench-$STAMP"
   for arm in on off; do
     step "memory[$arm] long coding session (bury=$bury) -- sliding-recall vs compaction"
     "$PY" "$MEMORY" run --project "$OPENCODE_PROJECT_DIR" --arm "$arm" --bury-turns "$bury" \
-      --judge-url "$FOOL_URL" --judge-model "$FOOL_MODEL_ID" --logfile "$LOG"
+      --judge-url "$ORCHESTRATOR_URL" --judge-model "$ORCHESTRATOR_MODEL_ID" --logfile "$LOG"
   done
   step "memory A/B diff (does memory beat compaction)"
   "$PY" "$MEMORY" diff --a on --b off | tee -a "$LOG"

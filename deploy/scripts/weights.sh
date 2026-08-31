@@ -90,7 +90,7 @@ show_status() {
   nas_mounted && ok "NAS mounted at $NAS_MODELS ($(free_gib "$NAS_MODELS")G free)" || warn "NAS not mounted at $NAS_MODELS"
 
   echo
-  say "orchestrator (fool)     DeepSeek $FOOL_MODEL_ID"
+  say "orchestrator (fool)     DeepSeek $ORCHESTRATOR_MODEL_ID"
   local tp1="$FOOL_SPARK_DIR/data/tp1/rank-sliced-tp1-manifest.json"
   if fool_reachable && ssh_fool "[ -f '$tp1' ]" 2>/dev/null; then
     local sz; sz="$(ssh_fool "du -sh '$FOOL_SPARK_DIR/data/tp1' 2>/dev/null | cut -f1" || echo '?')"

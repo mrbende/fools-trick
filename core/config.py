@@ -29,6 +29,7 @@ class Endpoint:
     api_key: str = "dummy"
     context: int = 32768
     max_output: int = 8192
+    api_key_env: str = ""  # when set, render {env:NAME} instead of the literal key
 
 
 @dataclass(frozen=True)
@@ -96,13 +97,15 @@ class Config:
     redis_url: str
     scratch_dir: str
     memory_enabled: bool
-    # Cap on a SINGLE tool result's in-view payload (tokens). One oversized read must not overflow
-    # the worker slot before the per-turn prune runs; the overage spills to the log + scratch.
     worker_tool_result_cap: int
 
     serving_worker: ServingWorker
     weights: Weights
     deploy: Deploy
+
+    library_api_url: str = "http://127.0.0.1:8080"
+    library_embed_url: str = "http://fool:8001"
+    library_inbox_dir: str = "/mnt/empress/library/inbox"
 
     primaries: tuple[str, ...] = ("build", "plan")
     workers: tuple[str, ...] = ("explore", "general", "reviewer")
@@ -170,7 +173,8 @@ def _load_backend(root: Path, tier: str, name: str) -> dict:
 def _endpoint(b: dict, tier: str, env_url: str, env_model: str, env_key: str) -> Endpoint:
     """Build an Endpoint from a backend def, honoring env overrides."""
     model = _get(b, "model", env_model, b.get("model", ""))
-    api_key = b.get("api_key") or os.environ.get(b.get("api_key_env", "") or "\0", "") or \
+    key_env = b.get("api_key_env", "") or ""
+    api_key = b.get("api_key") or os.environ.get(key_env or "\0", "") or \
         os.environ.get(env_key, "dummy")
     return Endpoint(
         name=model,
@@ -179,6 +183,7 @@ def _endpoint(b: dict, tier: str, env_url: str, env_model: str, env_key: str) ->
         api_key=api_key,
         context=int(b.get("context", b.get("ctx_per_slot", 32768))),
         max_output=int(b.get("max_output", 8192)),
+        api_key_env=key_env,
     )
 
 
@@ -191,7 +196,7 @@ def load(config_dir: Optional[Path] = None) -> Config:
     orch_backend = _load_backend(root, "orchestrator", _get(dep, "orchestrator", "", "spark-gb10"))
     worker_backend = _load_backend(root, "worker", _get(dep, "worker", "", "3080ti-qwen27"))
 
-    orchestrator = _endpoint(orch_backend, "orchestrator", "FOOL_URL", "FOOL_MODEL_ID", "FOOL_API_KEY")
+    orchestrator = _endpoint(orch_backend, "orchestrator", "ORCHESTRATOR_URL", "ORCHESTRATOR_MODEL_ID", "ORCHESTRATOR_API_KEY")
     worker = _endpoint(worker_backend, "worker", "WORKER_URL", "WORKER_MODEL_ID", "WORKER_API_KEY")
 
     # Worker serving physics + concurrency come from the selected worker backend.
@@ -265,6 +270,9 @@ def load(config_dir: Optional[Path] = None) -> Config:
         redis_url=_get(merged, "memory.redis_url", "REDIS_URL", "redis://127.0.0.1:6379"),
         scratch_dir=_get(merged, "memory.scratch_dir", "SCRATCH_DIR", "/tmp/fools-trick/scratch"),
         memory_enabled=_get(merged, "memory.enabled", "MEMORY_ENABLED", True),
+        library_api_url=_get(merged, "library.api_url", "LIBRARY_API_URL", "http://127.0.0.1:8080"),
+        library_embed_url=_get(merged, "library.embed_url", "LIBRARY_EMBED_URL", "http://fool:8001"),
+        library_inbox_dir=_get(merged, "library.inbox_dir", "LIBRARY_INBOX_DIR", "/mnt/empress/library/inbox"),
         serving_worker=serving_worker,
         weights=weights,
         deploy=deploy,
@@ -284,9 +292,9 @@ def _shell_exports(cfg: Config) -> str:
     the values are derived and validated once, in one place, then handed to the shell.
     """
     pairs = {
-        "FOOL_URL": cfg.orchestrator.base_url.removesuffix("/v1"),
-        "FOOL_MODEL_ID": cfg.orchestrator.model_id,
-        "FOOL_API_KEY": cfg.orchestrator.api_key,
+        "ORCHESTRATOR_URL": cfg.orchestrator.base_url.removesuffix("/v1"),
+        "ORCHESTRATOR_MODEL_ID": cfg.orchestrator.model_id,
+        "ORCHESTRATOR_API_KEY": cfg.orchestrator.api_key,
         "ORCHESTRATOR_CONTEXT": cfg.orchestrator.context,
         "ORCHESTRATOR_MAX_OUTPUT": cfg.orchestrator.max_output,
         "WORKER_URL": cfg.worker.base_url.removesuffix("/v1"),
@@ -387,6 +395,30 @@ _OPENCODE_ORCH_PROVIDER = "fool-ds4"
 _OPENCODE_WORKER_PROVIDER = "magus"
 
 
+def sync_worker_agent_models(cfg: Config) -> None:
+    """Retarget the worker subagents' .md frontmatter model to the config-resolved worker model.
+
+    opencode merges opencode.json's agent block with .opencode/agents/<name>.md, and the .md
+    frontmatter model WINS (verified). So a base-json retarget cannot reach the worker agents; the
+    only canonical sync is to rewrite the frontmatter from the resolved worker model. Without this,
+    flipping deploy.yaml's worker backend leaves the workers pinned to a model the provider no
+    longer serves (the exact stale-pin failure mode the retarget was built to kill).
+    """
+    wk_ref = f"{_OPENCODE_WORKER_PROVIDER}/{cfg.worker.model_id}"
+    agents_dir = _ROOT / ".opencode" / "agents"
+    if not agents_dir.is_dir():
+        return
+    import re
+    for md in agents_dir.glob("*.md"):
+        text = md.read_text()
+        if not text.startswith("---"):
+            continue
+        # only retarget agents whose frontmatter model already uses the worker provider
+        m = re.search(r"^model:\s*(" + re.escape(_OPENCODE_WORKER_PROVIDER) + r"/\S+)\s*$", text, re.M)
+        if m and m.group(1) != wk_ref:
+            md.write_text(text[: m.start(1)] + wk_ref + text[m.end(1):])
+
+
 def render_opencode(cfg: Config, base: dict) -> dict:
     """Inject the config-derived provider block + model refs into the static opencode base.
 
@@ -397,11 +429,14 @@ def render_opencode(cfg: Config, base: dict) -> dict:
     """
     out = dict(base)
     orch, wk = cfg.orchestrator, cfg.worker
+    # {env:NAME} keeps the secret out of the generated file; opencode resolves it at runtime.
+    orch_key = f"{{env:{orch.api_key_env}}}" if orch.api_key_env else orch.api_key
+    wk_key = f"{{env:{wk.api_key_env}}}" if wk.api_key_env else wk.api_key
     out["provider"] = {
         _OPENCODE_ORCH_PROVIDER: {
             "npm": "@ai-sdk/openai-compatible",
             "name": "orchestrator",
-            "options": {"baseURL": orch.base_url, "apiKey": orch.api_key, "timeout": False},
+            "options": {"baseURL": orch.base_url, "apiKey": orch_key, "timeout": False},
             "models": {
                 orch.model_id: {
                     "name": orch.model_id,
@@ -414,7 +449,7 @@ def render_opencode(cfg: Config, base: dict) -> dict:
         _OPENCODE_WORKER_PROVIDER: {
             "npm": "@ai-sdk/openai-compatible",
             "name": f"worker (x{cfg.worker_parallel})",
-            "options": {"baseURL": wk.base_url, "apiKey": wk.api_key, "timeout": False},
+            "options": {"baseURL": wk.base_url, "apiKey": wk_key, "timeout": False},
             "models": {
                 wk.model_id: {
                     "name": f"{wk.model_id} {cfg.weights.quant}",
@@ -428,6 +463,26 @@ def render_opencode(cfg: Config, base: dict) -> dict:
     }
     out["model"] = f"{_OPENCODE_ORCH_PROVIDER}/{orch.model_id}"
     out["small_model"] = f"{_OPENCODE_WORKER_PROVIDER}/{wk.model_id}"
+
+    # Retarget agents by provider key so their model tracks deploy.yaml instead of a stale base pin.
+    orch_ref = f"{_OPENCODE_ORCH_PROVIDER}/{orch.model_id}"
+    wk_ref = f"{_OPENCODE_WORKER_PROVIDER}/{wk.model_id}"
+    for agent in out.get("agent", {}).values():
+        m = agent.get("model", "")
+        if m.startswith(f"{_OPENCODE_ORCH_PROVIDER}/"):
+            agent["model"] = orch_ref
+        elif m.startswith(f"{_OPENCODE_WORKER_PROVIDER}/"):
+            agent["model"] = wk_ref
+
+    # Absolutize file refs so the config resolves from any cwd (launched via OPENCODE_CONFIG).
+    root = str(_ROOT)
+    out["instructions"] = [
+        p if os.path.isabs(p) else os.path.join(root, p) for p in out.get("instructions", [])
+    ]
+    for agent in out.get("agent", {}).values():
+        pr = agent.get("prompt", "")
+        if pr.startswith("{file:./"):
+            agent["prompt"] = "{file:" + os.path.join(root, pr[len("{file:./"):-1]) + "}"
     return out
 
 
@@ -447,6 +502,7 @@ def main(argv: Optional[list[str]] = None) -> int:
     cfg = load()
     cfg.validate()
     if args.opencode:
+        sync_worker_agent_models(cfg)   # keep .md worker-model frontmatter in step with deploy.yaml
         base = json.loads((_ROOT / "opencode.base.json").read_text())
         print(json.dumps(render_opencode(cfg, base), indent=2))
     elif args.env:

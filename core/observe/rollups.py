@@ -27,22 +27,33 @@ class TaskRollup:
     model_ids: list[str] = field(default_factory=list)
 
 
-def _query(sql: str, cwd: str) -> list[dict]:
+def query_opencode_db(sql: str, cwd: str) -> list[dict]:
+    """Run a read query against opencode's session DB. The mise wrapper can print a noise line
+    before the JSON, so parse from the first [ or {."""
     out = subprocess.run(
         ["opencode", "db", "--format", "json", sql],
         cwd=cwd, capture_output=True, text=True, timeout=30,
     )
     if out.returncode != 0 or not out.stdout.strip():
         return []
+    text = out.stdout
+    i = 0
+    for j, ch in enumerate(text):
+        if ch in "[{":
+            i = j
+            break
     try:
-        return json.loads(out.stdout)
+        return json.loads(text[i:])
     except json.JSONDecodeError:
         return []
 
 
+
+
+
 def task_rollup(root_session_id: str, cwd: str) -> TaskRollup:
     """Aggregate one root session + its descendants into a per-task rollup."""
-    rows = _query(
+    rows = query_opencode_db(
         "SELECT id, parent_id, agent, json_extract(model,'$.providerID') AS prov, "
         "json_extract(model,'$.modelID') AS mdl, tokens_input, tokens_output, "
         "tokens_reasoning, time_created, time_updated FROM session "
@@ -54,7 +65,7 @@ def task_rollup(root_session_id: str, cwd: str) -> TaskRollup:
 
 def task_rollups(cwd: str, limit: int = 50) -> list[TaskRollup]:
     """The most recent root sessions (tasks), each rolled up with its descendants."""
-    roots = _query(
+    roots = query_opencode_db(
         "SELECT id FROM session WHERE parent_id IS NULL ORDER BY time_created DESC "
         f"LIMIT {int(limit)}", cwd)
     return [task_rollup(r["id"], cwd) for r in roots]

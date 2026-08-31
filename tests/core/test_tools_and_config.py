@@ -207,3 +207,86 @@ class TestCliBoundary(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+_MINIMAL_PDF = (
+    b"%PDF-1.4\n"
+    b"1 0 obj<</Type/Catalog/Pages 2 0 R>>endobj\n"
+    b"2 0 obj<</Type/Pages/Kids[3 0 R]/Count 1>>endobj\n"
+    b"3 0 obj<</Type/Page/Parent 2 0 R/MediaBox[0 0 612 792]/Contents 4 0 R"
+    b"/Resources<</Font<</F1 5 0 R>>>>>>endobj\n"
+    b"4 0 obj<</Length 55>>stream\n"
+    b"BT /F1 24 Tf 72 720 Td (fools trick pdf test) Tj ET\n"
+    b"endstream\nendobj\n"
+    b"5 0 obj<</Type/Font/Subtype/Type1/BaseFont/Helvetica>>endobj\n"
+    b"trailer<</Root 1 0 R>>\n"
+)
+
+
+class TestPdfAndLibraryFetch(unittest.TestCase):
+    """pdf_read (ephemeral web->context) and library_fetch (permanent acquire) tool bodies."""
+
+    def setUp(self):
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_scratch = os.environ.get("SCRATCH_DIR")
+        os.environ["SCRATCH_DIR"] = self._tmp.name
+        self.log = MemoryLog(
+            db_path=os.path.join(self._tmp.name, "m.db"),
+            redis_url="redis://127.0.0.1:6399",
+            resolve_thread=identity_resolver().resolve,
+        )
+        self.ctx = ToolContext(sessionID="s1", agent="build")
+
+    def tearDown(self):
+        self.log.close()
+        if self._old_scratch is None:
+            os.environ.pop("SCRATCH_DIR", None)
+        else:
+            os.environ["SCRATCH_DIR"] = self._old_scratch
+        self._tmp.cleanup()
+
+    def test_pdf_read_extracts_to_scratch(self):
+        from core.tools import pdf
+        src = os.path.join(self._tmp.name, "paper.pdf")
+        with open(src, "wb") as fh:
+            fh.write(_MINIMAL_PDF)
+        out = pdf.pdf_read({"url": "file://" + src}, self.ctx, self.log)
+        self.assertIn("fools trick pdf test", out["output"])
+        txt = out["metadata"]["path"]
+        self.assertTrue(txt.startswith(self._tmp.name))
+        self.assertTrue(os.path.exists(txt))
+        self.assertEqual(out["metadata"]["pages"], 1)
+
+    def test_pdf_read_rejects_non_pdf(self):
+        from core.tools import pdf
+        src = os.path.join(self._tmp.name, "page.html")
+        with open(src, "wb") as fh:
+            fh.write(b"<html><body>not a pdf</body></html>")
+        out = pdf.pdf_read({"url": "file://" + src}, self.ctx, self.log)
+        self.assertIn("not a PDF", out["output"])
+
+    def test_pdf_read_requires_url(self):
+        from core.tools import pdf
+        self.assertIn("no url", pdf.pdf_read({}, self.ctx, self.log)["output"])
+
+    def test_library_fetch_reports_ok_and_miss(self):
+        from core.tools import library as lib
+        orig = lib._api
+        try:
+            lib._api = lambda path, params=None, timeout=30, method="GET": {
+                "ok": True, "method": "arxiv", "path": "/inbox/2301.00001.pdf", "queued": 1}
+            out = lib.library_fetch({"arxiv": "2301.00001"}, self.ctx, self.log)
+            self.assertIn("/inbox/2301.00001.pdf", out["output"])
+            self.assertTrue(out["metadata"]["ok"])
+
+            lib._api = lambda path, params=None, timeout=30, method="GET": {
+                "ok": False, "reason": "no open-access copy", "identifiers": {"doi": "10.x"}}
+            out = lib.library_fetch({"doi": "10.x/y"}, self.ctx, self.log)
+            self.assertIn("no open-access copy", out["output"])
+            self.assertFalse(out["metadata"]["ok"])
+        finally:
+            lib._api = orig
+
+    def test_library_fetch_requires_a_reference(self):
+        from core.tools import library as lib
+        self.assertIn("required", lib.library_fetch({}, self.ctx, self.log)["output"])

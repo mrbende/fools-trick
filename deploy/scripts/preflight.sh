@@ -61,7 +61,7 @@ fi
 echo
 # --- live endpoints (informational) ---
 http_ok "$WORKER_URL/v1/models" && ok "worker serving: $(models_id "$WORKER_URL")" || dim "worker not serving (make worker-up)"
-{ http_ok "$FOOL_URL/v1/models" || http_ok "$FOOL_URL/health"; } && ok "orchestrator serving: ${FOOL_URL}" || dim "orchestrator not serving (make fool-up)"
+{ http_ok "$ORCHESTRATOR_URL/v1/models" || http_ok "$ORCHESTRATOR_URL/health"; } && ok "orchestrator serving: ${ORCHESTRATOR_URL}" || dim "orchestrator not serving (make fool-up)"
 
 echo
 if [ "$fail" -ne 0 ]; then err "preflight FAILED"; exit 1; fi

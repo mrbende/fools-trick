@@ -8,8 +8,8 @@ source "$HERE/lib.sh"
 
 say "orchestrator (fool / DeepSeek-V4-Flash)"
 if fool_reachable; then
-  if http_ok "$FOOL_URL/v1/models" || http_ok "$FOOL_URL/health"; then
-    ok "up @ $FOOL_URL  models=[$(models_id "$FOOL_URL" || echo '?')]"
+  if http_ok "$ORCHESTRATOR_URL/v1/models" || http_ok "$ORCHESTRATOR_URL/health"; then
+    ok "up @ $ORCHESTRATOR_URL  models=[$(models_id "$ORCHESTRATOR_URL" || echo '?')]"
   else
     warn "reachable but not serving on :$FOOL_PORT"
   fi

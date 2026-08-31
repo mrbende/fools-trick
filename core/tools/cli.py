@@ -17,7 +17,9 @@ import sys
 from core import config as cfg_mod
 from core.log.log import MemoryLog
 from core.log.thread import MISSING, ThreadResolver
+from core.tools import library as lib
 from core.tools import memory as tools
+from core.tools import pdf
 from core.types import ToolContext
 
 _TOOLS = {
@@ -26,6 +28,15 @@ _TOOLS = {
     "recall": tools.recall,
     "note": tools.note,
     "promote": tools.promote,
+    "record_contract": tools.record_contract,
+    "report": tools.report,
+    "delegate_cheap": tools.delegate_cheap,
+    "scratch_write": tools.scratch_write,
+    "library_search": lib.library_search,
+    "library_read": lib.library_read,
+    "library_query": lib.library_query,
+    "library_fetch": lib.library_fetch,
+    "pdf_read": pdf.pdf_read,
 }
 
 
@@ -61,7 +72,7 @@ def _parent_walker():
 
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="fools-trick tools")
-    parser.add_argument("tool", choices=sorted([*_TOOLS, "drain"]))
+    parser.add_argument("tool", choices=sorted([*_TOOLS, "drain", "trace", "tripcheck"]))
     parser.add_argument("--json", default="{}", help="tool args as a JSON object")
     parser.add_argument("--session", default="", help="ToolContext sessionID")
     parser.add_argument("--agent", default="", help="ToolContext agent")
@@ -87,6 +98,37 @@ def main(argv: list[str] | None = None) -> int:
         moved = log.drain()
         log.close()
         print(json.dumps({"drained": moved}))
+        return 0
+    # trace reads the opencode DB directly (no MemoryLog needed). It is the orchestrator's
+    # debugging instrument: reconstruct a session's trajectory without hand-writing SQL.
+    if args.tool == "trace":
+        from core.observe.trace import format_trace, trace_recent_subagents, trace_session
+        sid = payload.get("sessionID") or payload.get("session")
+        if sid:
+            t = trace_session(sid, cwd=cfg_mod._ROOT)
+            print(json.dumps({"title": f"trace {sid[-12:]}", "output": format_trace(t), "metadata": {"session": sid}}))
+        else:
+            traces = trace_recent_subagents(cwd=cfg_mod._ROOT, limit=int(payload.get("limit") or 5))
+            out = "\n\n".join(format_trace(t) for t in traces)
+            print(json.dumps({"title": "recent subagents", "output": out, "metadata": {"count": len(traces)}}))
+        log.close()
+        return 0
+    # tripcheck: run the trip-wire comparison for a task against its recent baseline, and (for the
+    # current root session) report any fired wires with their detail. This makes a regression a
+    # signal the agent can act on mid-task, not a post-hoc `make observe` read.
+    if args.tool == "tripcheck":
+        from core.observe import check, task_rollups
+        rs = task_rollups(cfg_mod._ROOT, limit=8)
+        if len(rs) < 2:
+            print(json.dumps({"title": "tripcheck", "output": "not enough tasks for a baseline", "metadata": {"fired": 0}}))
+            log.close()
+            return 0
+        wires = check(rs[0], rs[1:])
+        fired = [w for w in wires if w.fired]
+        out = "\n".join(("FIRED " + w.name + ": " + w.detail) if w.fired else ("ok " + w.name) for w in wires)
+        print(json.dumps({"title": f"tripcheck ({len(fired)} fired)", "output": out,
+                          "metadata": {"fired": len(fired), "latest": rs[0].session_id}}))
+        log.close()
         return 0
     ctx = ToolContext(sessionID=args.session, agent=args.agent, callID=args.call_id)
     try:

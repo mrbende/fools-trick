@@ -49,7 +49,9 @@ function tabId(tab) {
 }
 
 async function call(path, body, method = "POST") {
-  const r = await fetch(`${BASE}${path}`, {
+  // camofox reads identity from the query string on GET, from the JSON body on POST.
+  const qs = method === "GET" ? "?" + new URLSearchParams({ ...UA, ...body }).toString() : ""
+  const r = await fetch(`${BASE}${path}${qs}`, {
     method,
     headers: { "Content-Type": "application/json" },
     body: method === "GET" ? undefined : JSON.stringify({ ...UA, ...body }),
@@ -58,6 +60,31 @@ async function call(path, body, method = "POST") {
   const text = await r.text()
   if (!r.ok) throw new Error(`camofox ${path} -> HTTP ${r.status}: ${text.slice(0, 300)}`)
   try { return JSON.parse(text) } catch { return { raw: text } }
+}
+
+// A tool that throws across the boundary can kill the whole run (it did: a reaped camofox tab
+// cost a 15-minute orchestrator session). Failures return an error RESULT; the model adapts.
+function fail(name, e, hint) {
+  return {
+    title: `${name} failed`,
+    output: `${name} failed: ${e.message || e}. ${hint || "For a simple URL read, use the built-in webfetch tool instead."}`,
+    metadata: { error: true },
+  }
+}
+
+// ensureTab -> navigate -> snapshot, the shared open/search body. camofox reaps a session after
+// ~5min idle, and a slow orchestrator turn is longer -- so one fresh retry on failure: the first
+// error is usually the reaper, not the page.
+async function snap($, url) {
+  const tab = await ensureTab($)
+  const id = tabId(tab)
+  await call(`/tabs/${id}/navigate`, { url })
+  const s = await call(`/tabs/${id}/snapshot`, {}, "GET")
+  return { id, body: typeof s === "string" ? s : JSON.stringify(s, null, 2) }
+}
+
+async function snapResilient($, url) {
+  try { return await snap($, url) } catch { return await snap($, url) }
 }
 
 export default async ({ $ }) => {
@@ -73,16 +100,14 @@ export default async ({ $ }) => {
           url: tool.schema.string().describe("Absolute URL to open"),
         },
         async execute({ url }) {
-          const tab = await ensureTab($)
-          const id = tabId(tab)
-          await call(`/tabs/${id}/navigate`, { url })
-          const snap = await call(`/tabs/${id}/snapshot`, {}, "GET")
-          const body = typeof snap === "string" ? snap : JSON.stringify(snap, null, 2)
-          return {
-            title: `browsed ${url}`,
-            output: `tab=${id}\n${body.slice(0, 12000)}`,
-            metadata: { tab: id, url },
-          }
+          try {
+            const r = await snapResilient($, url)
+            return {
+              title: `browsed ${url}`,
+              output: `tab=${r.id}\n${r.body.slice(0, 6000)}`,
+              metadata: { tab: r.id, url },
+            }
+          } catch (e) { return fail("browse_open", e) }
         },
       }),
 
@@ -96,17 +121,15 @@ export default async ({ $ }) => {
           query: tool.schema.string().describe("Search query"),
         },
         async execute({ query }) {
-          const tab = await ensureTab($)
-          const id = tabId(tab)
           const url = `https://duckduckgo.com/html/?q=${encodeURIComponent(query)}`
-          await call(`/tabs/${id}/navigate`, { url })
-          const snap = await call(`/tabs/${id}/snapshot`, {}, "GET")
-          const body = typeof snap === "string" ? snap : JSON.stringify(snap, null, 2)
-          return {
-            title: `search: ${query}`,
-            output: body.slice(0, 12000),
-            metadata: { tab: id, query },
-          }
+          try {
+            const r = await snapResilient($, url)
+            return {
+              title: `search: ${query}`,
+              output: r.body.slice(0, 6000),
+              metadata: { tab: r.id, query },
+            }
+          } catch (e) { return fail("web_search", e) }
         },
       }),
 
@@ -120,10 +143,15 @@ export default async ({ $ }) => {
           selector: tool.schema.string().optional().describe("CSS selector, if no ref"),
         },
         async execute({ tab, ref, selector }) {
-          await call(`/tabs/${tab}/click`, ref ? { ref } : { selector })
-          const snap = await call(`/tabs/${tab}/snapshot`, {}, "GET")
-          const body = typeof snap === "string" ? snap : JSON.stringify(snap, null, 2)
-          return { title: `clicked in ${tab}`, output: body.slice(0, 12000), metadata: { tab } }
+          try {
+            await call(`/tabs/${tab}/click`, ref ? { ref } : { selector })
+            const snap = await call(`/tabs/${tab}/snapshot`, {}, "GET")
+            const body = typeof snap === "string" ? snap : JSON.stringify(snap, null, 2)
+            return { title: `clicked in ${tab}`, output: body.slice(0, 6000), metadata: { tab } }
+          } catch (e) {
+            return fail("browse_click", e,
+              "The tab may have been reaped for idleness during a long turn; its page state is gone. Re-open the page with browse_open and retry.")
+          }
         },
       }),
 
@@ -137,10 +165,15 @@ export default async ({ $ }) => {
           text: tool.schema.string().describe("Text to type"),
         },
         async execute({ tab, ref, text }) {
-          await call(`/tabs/${tab}/type`, { ref, text })
-          const snap = await call(`/tabs/${tab}/snapshot`, {}, "GET")
-          const body = typeof snap === "string" ? snap : JSON.stringify(snap, null, 2)
-          return { title: `typed in ${tab}`, output: body.slice(0, 12000), metadata: { tab } }
+          try {
+            await call(`/tabs/${tab}/type`, { ref, text })
+            const snap = await call(`/tabs/${tab}/snapshot`, {}, "GET")
+            const body = typeof snap === "string" ? snap : JSON.stringify(snap, null, 2)
+            return { title: `typed in ${tab}`, output: body.slice(0, 6000), metadata: { tab } }
+          } catch (e) {
+            return fail("browse_type", e,
+              "The tab may have been reaped for idleness during a long turn; its page state is gone. Re-open the page with browse_open and retry.")
+          }
         },
       }),
     },

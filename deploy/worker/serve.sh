@@ -15,7 +15,9 @@
 #                          (GPUs idle, throughput craters); q8_0 and f16 stay fully on GPU.
 #   -fa on               : mandatory with quantized KV (context creation fails otherwise)
 #   --parallel N         : WORKER_PARALLEL slots; cheap here -- hybrid arch keeps KV small (~16/65 blocks)
-#   --cache-reuse 256    : reuse KV across turns; big win for multi-turn agent loops
+#   NO --cache-reuse     : reuse-KV-across-turns makes a slot's resident KV grow past the slot
+#                          ceiling independent of the message array we prune (the recurring
+#                          ContextOverflow). Each turn must be exactly the pruned array.
 #   --no-context-shift   : hard-stop at limit, not silent truncation of the system prompt
 #   no --spec-* flags    : MTP spec halves prefill on a layer split (bug #27428), CUDA
 #                          acceptance collapses (#26750), and the abliterated GGUF likely
@@ -56,7 +58,6 @@ args=(
   -ctk "$WORKER_KV" -ctv "$WORKER_KV"
   -ub 512 -b 2048
   --parallel "$WORKER_PARALLEL"
-  --cache-reuse 256
   --no-context-shift
   --jinja
   --reasoning-format deepseek

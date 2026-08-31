@@ -52,9 +52,34 @@ export function cfgNum(envKey, cfgPath, fallback) {
   return v != null ? Number(v) : fallback
 }
 
-// Call a core tool. Returns the parsed neutral result object, or a soft error object.
+// Health gate: a tool whose backend is down errors cleanly, not a hang. Cached briefly so we
+// don't run the health check on every call.
+let _health = { at: 0, map: {} }
+function toolsetHealth() {
+  if (Date.now() - _health.at < 5000) return _health.map
+  try {
+    const out = execFileSync(PYTHON, ["-c",
+      "import sys; sys.path.insert(0, r'" + ROOT + "'); " +
+      "import json; from core.tools.registry import health; print(json.dumps(health()))"],
+      { cwd: ROOT, env: childEnv(), timeout: 8000 })
+    _health = { at: Date.now(), map: JSON.parse(String(out)) }
+  } catch {
+    _health = { at: Date.now(), map: {} }  // unknown -> allow (don't block on a health-check failure)
+  }
+  return _health.map
+}
+
+// Call a core tool. Returns the parsed neutral result object, or a clean error if the backend
+// toolset is down.
 export function callTool(toolName, args, ctx = {}) {
   return new Promise((res) => {
+    // gate on the toolset's health: a down backend returns a clean error, not a hang
+    const h = toolsetHealth()
+    const ts = Object.entries(h).find(([, v]) => (v.tools || []).includes(toolName))
+    if (ts && ts[1].ok === false) {
+      res({ title: `${toolName} unavailable`, output: `${toolName} is unavailable: ${ts[1].reason}. The ${ts[0]} toolset backend is down.`, metadata: { toolset: ts[0] } })
+      return
+    }
     const argv = [
       "-m", "core.tools.cli", toolName,
       "--json", JSON.stringify(args || {}),
@@ -71,9 +96,17 @@ export function callTool(toolName, args, ctx = {}) {
   })
 }
 
+let _warnedCoreDown = false
+function _warnCoreDown(err) {
+  if (_warnedCoreDown) return
+  _warnedCoreDown = true
+  process.stderr.write(`fools-trick: context core unreachable, the per-turn prune is OFF (${String(err).slice(0,120)}). Start the rig (make up); the worker degrades to no-prune until it's back.\n`)
+}
+
 // Ask the core for a context decision synchronously (the transform hook is sync-in-effect --
-// it must mutate the array before the turn is sent). Returns the decision, or null on failure
-// (fail open: the worker degrades, never blocks the turn).
+// it must mutate the array before the turn is sent). Returns the decision, or null on failure.
+// A failure is logged ONCE (a trip wire), not silent -- a silently-skipped prune is how the
+// routing bug hid.
 export function planContext(which, { turns, inputBudget, keepRecent, keepTail, distilled, pinned }) {
   // turns go on stdin (large tool results exceed the argv limit); small args stay on argv.
   const argv = ["-m", "core.context.cli", which,
@@ -86,7 +119,8 @@ export function planContext(which, { turns, inputBudget, keepRecent, keepTail, d
       input: JSON.stringify(turns),
     })
     return JSON.parse(String(out))
-  } catch {
+  } catch (e) {
+    _warnCoreDown(e)
     return null
   }
 }
@@ -105,5 +139,45 @@ export function loadBlocked() {
       { re: /\bgit\s+push\b/i, reason: "git push is human-gated (core unreachable; failing safe)." },
       { re: /\bterraform\s+(apply|destroy)\b/i, reason: "infra apply/destroy is human-gated." },
     ]
+  }
+}
+
+// Load the always-protected branch names from the Python source of truth, once, synchronously.
+export function loadProtectedBranches() {
+  try {
+    const out = execFileSync(PYTHON, ["-c",
+      "import sys; sys.path.insert(0, r'" + ROOT + "'); " +
+      "from core.gates.policy import export_protected_branches_json; print(export_protected_branches_json())"],
+      { cwd: ROOT, env: childEnv(), timeout: 8000 })
+    return new Set(JSON.parse(String(out)).map((b) => String(b).toLowerCase()))
+  } catch {
+    return new Set(["master", "main", "staging"])   // fail closed on the always-protected set
+  }
+}
+
+// Load the code-file + verify-command regexes from the Python policy (single source of truth).
+export function loadGatePatterns() {
+  try {
+    const out = execFileSync(PYTHON, ["-c",
+      "import sys; sys.path.insert(0, r'" + ROOT + "'); " +
+      "from core.gates.policy import export_gate_patterns_json; print(export_gate_patterns_json())"],
+      { cwd: ROOT, env: childEnv(), timeout: 8000 })
+    const d = JSON.parse(String(out))
+    return { CODE_EXT: new RegExp(d.code_ext), VERIFY_CMD: new RegExp(d.verify_cmd) }
+  } catch {
+    return { CODE_EXT: null, VERIFY_CMD: null }   // caller fails safe (treat nothing as code/verify)
+  }
+}
+
+// The current branch of the repo the agent is working IN. Defaults to the process cwd (the agent's
+// working directory, where its `git commit` runs) -- NOT the fools-trick ROOT, since the harness
+// config is loaded from ROOT but the agent operates on the user's project. Lowercase, "" if none.
+export function currentBranch(cwd) {
+  try {
+    const out = execFileSync("git", ["rev-parse", "--abbrev-ref", "HEAD"],
+      { cwd: cwd || process.cwd(), timeout: 3000 })
+    return String(out).trim().toLowerCase()
+  } catch {
+    return ""
   }
 }

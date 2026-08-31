@@ -81,12 +81,13 @@ class TestWorkerPrune(unittest.TestCase):
         # the already-extracted A. Here the distill set names c1 (A) correctly, so the fix
         # evicts A and keeps B -- the worker retains its live working set. And even if the
         # gate were wrong, B is recoverable via expand(seq), so it can never be a lobotomy.
-        A = _tool_turn("c1", 24500)   # read file A (~7000 tok), already distilled
-        B = _tool_turn("c2", 24500)   # read file B, actively in use
-        C = _tool_turn("c3", 24500)   # forces over-budget (3x7000 = 21000)
+        A = _tool_turn("c1", 12000)   # read file A (~4800 tok at the 2.5 divisor), distilled
+        B = _tool_turn("c2", 12000)   # read file B, actively in use
+        C = _tool_turn("c3", 12000)   # forces over-budget (3x4800 = 14400)
         turns = [A, B, C]
-        # budget below the live total so the prune must act; keep_recent=1 protects C only
-        d = plan_worker_prune(turns, input_budget=16000, keep_recent=1, distilled={"c1"})
+        # budget forces exactly ONE eviction so the scenario tests the choice, not the budget;
+        # keep_recent=1 protects C only
+        d = plan_worker_prune(turns, input_budget=10000, keep_recent=1, distilled={"c1"})
         self.assertIn("c1", d.evict_call_ids)       # the distilled (extracted) file goes
         self.assertNotIn("c2", d.evict_call_ids)    # the in-use file is kept
         # and the evicted file is recoverable, not lost

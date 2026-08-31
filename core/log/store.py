@@ -114,32 +114,46 @@ class EpisodeStore:
         return self.append(thread=thread, session=session, agent=agent, role=role,
                            content=content, ts=ts)
 
-    def search(self, *, thread: str, query: str, k: int = 10) -> list[Episode]:
-        """FTS5/BM25 recall within a thread; best match first.
-
-        Terms are lowercased, alphanumeric-tokenized, quoted and OR-joined. Falls back to a
-        LIKE scan if FTS yields nothing or errors (so a query of only punctuation still
-        returns something rather than raising).
-        """
+    def search(self, *, thread: str, query: str, k: int = 10,
+               role: Optional[str] = None, agent: Optional[str] = None,
+               after_seq: Optional[Seq] = None, before_seq: Optional[Seq] = None) -> list[Episode]:
+        """FTS5/BM25 recall within a thread, with optional scope filters (role/agent/seq range)."""
         terms = _TERM.findall(str(query).lower())
+        extra, params = [], [thread]
+        if role is not None: extra.append("e.role = ?"); params.append(role)
+        if agent is not None: extra.append("e.agent = ?"); params.append(agent)
+        if after_seq is not None: extra.append("e.id > ?"); params.append(after_seq)
+        if before_seq is not None: extra.append("e.id < ?"); params.append(before_seq)
+        where = " AND ".join(["e.thread = ?", *extra])
         if terms:
             match = " OR ".join(f'"{t}"' for t in terms)
             try:
                 rows = self._db.execute(
                     "SELECT e.id, e.thread, e.session, e.agent, e.role, e.content, e.ts "
                     "FROM episodes_fts f JOIN episodes e ON e.id = f.rowid "
-                    "WHERE f.thread = ? AND episodes_fts MATCH ? "
+                    f"WHERE episodes_fts MATCH ? AND {where} "
                     "ORDER BY bm25(episodes_fts) LIMIT ?",
-                    (thread, match, k),
+                    [match, *params, k],
                 ).fetchall()
                 if rows:
                     return [self._row(r) for r in rows]
             except sqlite3.OperationalError:
-                pass  # fall through to LIKE
+                pass
+        like_where = where.replace("e.", "")  # the LIKE path has no alias
         rows = self._db.execute(
             "SELECT id, thread, session, agent, role, content, ts FROM episodes "
-            "WHERE thread = ? AND content LIKE ? ORDER BY id DESC LIMIT ?",
-            (thread, f"%{query}%", k),
+            f"WHERE content LIKE ? AND {like_where} ORDER BY id DESC LIMIT ?",
+            [f"%{query}%", *params, k],
+        ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def recent_by_role(self, role: str, k: int = 100) -> list[Episode]:
+        """Most recent N episodes of a role across all threads (the scorecard reads contracts and
+        handoffs this way -- they are goal/outcome records, not thread-scoped recall)."""
+        rows = self._db.execute(
+            "SELECT id, thread, session, agent, role, content, ts FROM episodes "
+            "WHERE role = ? ORDER BY id DESC LIMIT ?",
+            (role, k),
         ).fetchall()
         return [self._row(r) for r in rows]
 

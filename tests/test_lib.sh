@@ -64,7 +64,7 @@ check "WORKER_KV is GPU-resident-safe" "yes" "$kv_ok"
 # decode budget (DECODE_HEADROOM) MUST stay under the orchestrator's context, or output tokens have
 # no room to do real work. 384000 is DeepSeek-V4-Flash's MAX_MODEL_LEN.
 echo "config sanity: sliding window + decode headroom fits under orchestrator context"
-fool_ctx="$(python3 -c "import json;print(json.load(open('$ROOT/opencode.json'))['provider']['fool-ds4']['models']['$FOOL_MODEL_ID']['limit']['context'])" 2>/dev/null)"
+fool_ctx="$(python3 -c "import json;print(json.load(open('$ROOT/opencode.json'))['provider']['fool-ds4']['models']['$ORCHESTRATOR_MODEL_ID']['limit']['context'])" 2>/dev/null)"
 budget=$(( WINDOW_INPUT_TOKENS + DECODE_HEADROOM ))
 check "window+headroom < fool context" "yes" "$([ "$budget" -lt "${fool_ctx:-0}" ] && echo yes || echo no)"
 

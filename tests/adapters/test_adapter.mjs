@@ -26,13 +26,55 @@ console.log("adapter: human-gate (policy loaded from the Python core)")
 {
   const gates = (await import("../../adapters/opencode/plugin_gates.js")).default
   const hooks = await gates()
-  let blocked = false
+  // git push is always blocked -- by the protected-branch gate when on master/main/staging, else by
+  // the human-gate. Assert the security property (blocked), tolerant of which gate fires.
+  let pushErr = ""
   try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "git push origin main" } }) }
-  catch (e) { blocked = String(e.message).includes("human-gate") }
-  eq("blocks git push", blocked, true)
+  catch (e) { pushErr = String(e.message) }
+  eq("blocks git push", /human-gate|protected-branch/.test(pushErr), true)
+
+  // Mutating infra is human-gated; read-only cloud inspection is allowed.
+  let tfErr = ""
+  try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "terraform import x y" } }) }
+  catch (e) { tfErr = String(e.message) }
+  eq("blocks terraform", /human-gate/.test(tfErr), true)
+  let awsMutBlocked = false
+  try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "aws ec2 run-instances --image-id ami-1" } }) }
+  catch { awsMutBlocked = true }
+  eq("blocks mutating aws", awsMutBlocked, true)
+  let awsReadOk = true
+  try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "aws ec2 describe-instances" } }) } catch { awsReadOk = false }
+  eq("allows read-only aws", awsReadOk, true)
+
   let allowed = true
   try { await hooks["tool.execute.before"]({ tool: "bash" }, { args: { command: "make test" } }) } catch { allowed = false }
   eq("allows make test", allowed, true)
+}
+
+console.log("adapter: goal-direction gate (canonicalize keyed off the recorded contract SIGNAL)")
+{
+  // Run in a throwaway feature-branch repo so the protected-branch gate does not mask the SIGNAL gate.
+  const { execSync } = await import("node:child_process")
+  const repo = mkdtempSync(resolve(tmpdir(), "ft-gate-"))
+  execSync("git init -q && git checkout -q -b feature/probe && git commit -q --allow-empty -m init", { cwd: repo, shell: "/bin/bash" })
+  const cwd0 = process.cwd()
+  process.chdir(repo)
+  const gates = (await import("../../adapters/opencode/plugin_gates.js?goal")).default
+  const g = await gates()
+  const B = g["tool.execute.before"], A = g["tool.execute.after"]
+  const sid = "goal"
+  await A({ tool: "record_contract", sessionID: sid }, { metadata: { signal: "pytest tests/test_x.py" } })
+  await A({ tool: "edit", sessionID: sid, args: { filePath: "/r/x.py" } })
+  await A({ tool: "bash", sessionID: sid, args: { command: "make lint" } })   // unrelated verify
+  let blockedWrong = false
+  try { await B({ tool: "bash", sessionID: sid }, { args: { command: "git commit -m wip" } }) }
+  catch (e) { blockedWrong = /SIGNAL for this task/.test(e.message) }
+  eq("blocks commit when the contract SIGNAL has not run", blockedWrong, true)
+  await A({ tool: "bash", sessionID: sid, args: { command: "pytest tests/test_x.py -q" } })   // the real signal
+  let allowedAfter = true
+  try { await B({ tool: "bash", sessionID: sid }, { args: { command: "git commit -m done" } }) } catch { allowedAfter = false }
+  eq("allows commit after the contract SIGNAL runs", allowedAfter, true)
+  process.chdir(cwd0)
 }
 
 console.log("adapter: bridge boundary (JS -> Python core -> SQLite -> back)")
@@ -86,7 +128,14 @@ console.log("adapter: per-result cap spills an oversized read and leaves a seq p
 {
   const mem = (await import("../../adapters/opencode/plugin_memory.js")).default
   const hooks = await mem()
-  const big = "y".repeat(60000) // ~60KB, over the 8000-token cap
+  // Derive the payload from the CONFIGURED cap via the same resolver the plugin uses (cfgNum:
+  // env -> config.yaml -> default), not a frozen magic number. This tests the spill BEHAVIOR at
+  // whatever worker_tool_result_cap resolves to. The plugin caps at (cap_tokens * 2.5) chars
+  // (estimate.py's divisor); build a payload comfortably above that.
+  const { cfgNum } = await import("../../adapters/opencode/bridge.js")
+  const capTokens = cfgNum("WORKER_TOOL_RESULT_CAP", "worker_tool_result_cap", 8000)
+  const capChars = capTokens * 2.5
+  const big = "y".repeat(Math.ceil(capChars * 2)) // 2x the cap: unambiguously oversized
   const output = { title: "read", output: big, metadata: {} }
   await hooks["tool.execute.after"]({ tool: "read", sessionID: "w", callID: "c9", args: {} }, output)
   eq("oversized output is truncated", output.output.length < big.length, true)

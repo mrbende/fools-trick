@@ -8,7 +8,7 @@ from __future__ import annotations
 
 import sys
 
-from core.observe import check, task_rollups
+from core.observe import check, scorecard, task_rollups
 
 
 def main() -> int:
@@ -30,6 +30,17 @@ def main() -> int:
         for w in check(rs[0], rs[1:]):
             mark = "FIRED" if w.fired else "ok"
             print(f"  {mark:5} {w.name}: {w.detail}")
+
+    # The real metric (Layer 6): outcomes, not tokens. Contracts = goal-direction; verified handoffs
+    # = work proven before it advanced; escalations = clean hand-offs instead of guessing.
+    sc = scorecard()
+    if sc.get("available"):
+        rate = f"{sc['verification_rate']:.0%}" if sc["verification_rate"] is not None else "n/a"
+        print("\nscorecard (goal-direction + verified work):")
+        print(f"  contracts recorded:   {sc['contracts']}")
+        print(f"  worker handoffs:      {sc['handoffs']}  (verified: {sc['handoffs_verified']})")
+        print(f"  escalations:          {sc['escalations']}")
+        print(f"  verification rate:    {rate}")
     return 0
 
 

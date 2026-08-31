@@ -28,6 +28,31 @@ up_redis() {
   die "redis did not become healthy"
 }
 
+up_camofox() {
+  # The web/research layer: an anti-detection Firefox server. Real-time web is a first-class agent
+  # capability, so it is brought up with the harness rather than lazy-started mid-task (which added
+  # latency and a fragile failure path). Backgrounded; journald-free, logs to the scratch dir.
+  local base="${CAMOFOX_URL:-http://localhost:9377}"
+  local dir="${CAMOFOX_DIR:-$HOME/Source/camofox-browser}"
+  local ua='{"userId":"fools-trick","sessionKey":"health"}'
+  if curl -fsS --max-time 3 -X POST "$base/tabs" -H 'Content-Type: application/json' -d "$ua" >/dev/null 2>&1; then
+    ok "camofox already up ($base)"; return 0
+  fi
+  [ -f "$dir/server.js" ] || { warn "camofox server not found at $dir; web tools will be unavailable"; return 0; }
+  say "starting camofox web server ($base)"
+  mkdir -p /tmp/fools-trick
+  # Fully detach: redirect all three fds so the background node process does not hold this script's
+  # stdout open (which would make the caller block until camofox exits). setsid + </dev/null is the
+  # clean detach; the loop below polls for health.
+  ( cd "$dir" && setsid node server.js </dev/null >/tmp/fools-trick/camofox.log 2>&1 & ) >/dev/null 2>&1
+  for _ in $(seq 1 20); do
+    sleep 1
+    curl -fsS --max-time 2 -X POST "$base/tabs" -H 'Content-Type: application/json' -d "$ua" >/dev/null 2>&1 \
+      && { ok "camofox healthy ($base)"; return 0; }
+  done
+  warn "camofox did not become healthy in 20s (see /tmp/fools-trick/camofox.log); web tools will lazy-start on first use"
+}
+
 up_worker() {
   say "starting worker on magus"
   if http_ok "$WORKER_URL/v1/models"; then
@@ -84,8 +109,8 @@ up_fool() {
   fool_spark_synced || die "fool spark clone not synced (make fool-sync) -- refusing to start"
 
   # Already healthy?
-  if http_ok "$FOOL_URL/v1/models" || http_ok "$FOOL_URL/health"; then
-    ok "orchestrator already up and healthy at $FOOL_URL"; return 0
+  if http_ok "$ORCHESTRATOR_URL/v1/models" || http_ok "$ORCHESTRATOR_URL/health"; then
+    ok "orchestrator already up and healthy at $ORCHESTRATOR_URL"; return 0
   fi
 
   # Something on the port but unhealthy? confirm before the recipe recreates the container.
@@ -108,13 +133,14 @@ up_fool() {
   ssh_fool "cd '$FOOL_SPARK_DIR' && HF_CACHE='$FOOL_HF_CACHE' ABLATE=$FOOL_ABLATE \
     DEFAULT_CHAT_TEMPLATE_KWARGS_EFFORT='$FOOL_EFFORT' ./start.sh --no-wait" \
     || die "spark start.sh failed on $FOOL_HOST"
-  wait_health "$FOOL_URL" "${FOOL_STARTUP_WAIT:-3600}" "orchestrator"
+  wait_health "$ORCHESTRATOR_URL" "${FOOL_STARTUP_WAIT:-3600}" "orchestrator"
 }
 
 case "${1:-all}" in
-  redis)  up_redis ;;
-  worker) up_worker ;;
-  fool)   up_fool ;;
-  all)    up_redis; up_worker; up_fool ;;
-  *) die "usage: up.sh {redis|worker|fool|all}" ;;
+  redis)   up_redis ;;
+  camofox) up_camofox ;;
+  worker)  up_worker ;;
+  fool)    up_fool ;;
+  all)     up_redis; up_camofox; up_worker; up_fool ;;
+  *) die "usage: up.sh {redis|camofox|worker|fool|all}" ;;
 esac

@@ -151,9 +151,11 @@ class MemoryLog:
                 moved += 1
         return moved
 
-    def search(self, *, thread: str, query: str, k: int = 10) -> list[Episode]:
+    def search(self, *, thread: str, query: str, k: int = 10,
+               role=None, agent=None, after_seq=None, before_seq=None) -> list[Episode]:
         self.drain()  # so just-written episodes are searchable
-        return self.store.search(thread=thread, query=query, k=k)
+        return self.store.search(thread=thread, query=query, k=k,
+                                 role=role, agent=agent, after_seq=after_seq, before_seq=before_seq)
 
     def recent(self, *, thread: str, k: int = 20) -> list[Episode]:
         # The hot recent-cache tier was cut: nothing in the live path read it. If a real reader

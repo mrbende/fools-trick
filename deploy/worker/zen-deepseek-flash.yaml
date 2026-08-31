@@ -1,0 +1,11 @@
+# Worker backend: DeepSeek V4 Flash via OpenCode Zen (cloud gateway; serves nothing locally).
+# Selected by deploy.yaml's `worker: zen-deepseek-flash`. Use the paid model, never the -free one:
+# -free stalls the agent loop after tool calls (OpenCode #39204).
+name: zen-deepseek-flash
+kind: cloud
+model: deepseek-v4-flash
+base_url: https://opencode.ai/zen
+api_key_env: ZEN_API_KEY
+parallel: 4
+ctx_per_slot: 131072   # generous slot; worker_input_tokens (config.yaml) is what bounds a worker
+max_output: 24000

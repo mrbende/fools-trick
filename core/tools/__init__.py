@@ -5,9 +5,13 @@ the JS adapter as a subprocess) or a Prime Agent kernel binding. No harness shap
 """
 
 from core.tools.memory import (
+    delegate_cheap,
+    scratch_write,
     note,
     promote,
     recall,
+    record_contract,
+    report,
     memory_search,
     memory_write,
 )

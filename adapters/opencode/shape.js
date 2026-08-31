@@ -8,7 +8,9 @@
 //   reasoning part: { type:"reasoning", text }
 //   tool part: { type:"tool", callID, state:{ status, output, time:{ compacted? } } }
 
-const est = (s) => Math.ceil((s ? String(s).length : 0) / 3.5)
+// Must match core/context/estimate.py (_CHARS_PER_TOKEN): conservative on markup, errs OVER --
+// this estimate gates the worker slot, a hard wall.
+const est = (s) => Math.ceil((s ? String(s).length : 0) / 2.5)
 
 export function agentOf(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i]?.info?.agent) return msgs[i].info.agent
@@ -53,7 +55,8 @@ export function inputTokens(msgs) {
 }
 
 // Apply the core's worker-prune decision: compact the named tool results in place. Returns the
-// evicted parts (so the caller can persist them to the Event Log before/with eviction).
+// evicted parts with their message/part refs (so the caller can persist the output by seq and index
+// the recovery pointer onto the part it evicted).
 export function applyEvict(msgs, evictCallIDs) {
   const set = new Set(evictCallIDs)
   const evicted = []
@@ -63,7 +66,7 @@ export function applyEvict(msgs, evictCallIDs) {
         p.state = p.state || {}
         p.state.time = p.state.time || {}
         p.state.time.compacted = Date.now()
-        evicted.push({ callID: p.callID, output: p.state.output })
+        evicted.push({ callID: p.callID, output: p.state.output, msg: m, part: p })
       }
   return evicted
 }

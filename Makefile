@@ -40,6 +40,9 @@ preflight: ## read-only readiness check: tools, disk, mounts, weights, fool sync
 	@$(S)/preflight.sh
 
 ##@ Run
+.PHONY: start
+start: ## ONE COMMAND: load .env, regen config, start redis, launch interactive opencode (cloud rig)
+	@$(S)/start.sh
 .PHONY: up
 up: ## start both: worker on magus + orchestrator on fool
 	@$(S)/up.sh all
@@ -154,3 +157,11 @@ redis-up: ## start only the redis memory container (magus)
 .PHONY: redis-down
 redis-down: ## stop the redis memory container (short-term memory is ephemeral; SQLite persists)
 	@$(S)/down.sh redis
+
+##@ Autonomous loop
+.PHONY: loop
+loop: ## start the self-continuation loop (re-prompts the live session on an interval until stop/budget)
+	@$(S)/loop.sh
+.PHONY: loop-stop
+loop-stop: ## stop the autonomous loop (touch the stop file)
+	@touch "$$(python3 -c 'import sys;sys.path.insert(0,".");import core.config as c;print(c.load().scratch_dir)')/loop-stop" && echo "stop file set; the loop ends at the next interval"

@@ -723,6 +723,72 @@ files, the prune evicted prior results, the worker recovered them with 6 `recall
 answered correctly (both the early needle and the late fact). Recoverable eviction now fires in
 production.
 
+## RESOLVED: the recurring ContextOverflow was the slot's KV cache, not the message array
+
+The second half of the same overflow, found only by reading the worker server's own journald.
+After the routing fix, a fresh overflow persisted across runs (44k-66k tokens on the 32768 slot).
+The mechanism: llama.cpp `--cache-reuse 256` + `--no-context-shift` keep a slot's KV resident
+ACROSS a session's turns, so a request's token count is the slot's CACHED prefix + the new turn --
+the slot's resident context grows per turn independent of the message array we prune. We managed
+the message array; the overflow lived in the slot's KV. Two different context boundaries; we were
+managing one.
+
+Fixed by dropping `--cache-reuse` for the workers: each turn is now exactly the pruned message
+array, so the two boundaries coincide and the prune genuinely governs the slot. Costs the
+cross-turn KV-reuse speedup; buys correctness (the prune now actually bounds what the slot holds).
+Proven live: the task that overflowed both A/B arms now completes with no overflow (journal clean
+since the restart), both facts correct. `n_slots=4, n_ctx_slot=32768`.
+
+## BUILT (the four "scaffold vs depth" gaps, decided with evidence)
+
+Re-examined the four places we only gestured at, against the papers, and resolved each:
+
+- **Scoped/typed memory_search -- BUILT.** `store.search` / `log.search` now take role/agent/
+  after_seq/before_seq filters (search only decisions vs tool results vs escalations, by agent, by
+  seq range), surfaced on the `memory_search` tool. This is the recall-precision gap Scroll's typed
+  `ms.search` has and we lacked. Tested at the store seam.
+- **The independent verifier loop -- BUILT (structural, not opt-in).** The verify-gate now also
+  steers the orchestrator (build/plan only; workers can't dispatch) to dispatch the read-only
+  @reviewer on the diff after a code edit. Producer != verifier is now a wired step, matching the
+  enterprise result (93% hallucination-free rests on independent verification). Proven: the
+  orchestrator gets the nudge, a worker does not.
+- **Model-written eviction headlines -- DEFERRED with evidence.** Scroll's per-turn model-written
+  headline (task/state/next/status) is a semantic anchor; ours is an auto-generated preview. The
+  payoff is helping a worker pick WHICH seq to recall, which only matters when the eviction index is
+  deep. With the bounded roll-up (4 full + collapsed spans) a worker has enough to pick; build the
+  semantic headline when a long task shows a worker recalling the wrong span.
+- **Checkpoint/resume for the orchestrator -- SOLVED by the existing layers, not new code.** opencode
+  persists sessions and resumes them (`--continue`/`--session`); the sliding window persists evicted
+  turns to the Event Log, so a resumed session recalls slid-out history via memory_search rather than
+  replaying it. The playbook's Recovery Test passes live: plant a fact, close the session, resume,
+  recall the value. No new machinery needed.
+
+## BUILT: the harness-maturity layer (drawn from hermes-agent + the playbook)
+
+The capabilities a mature agent harness has that we lacked, built this round:
+
+- **Trajectory reconstruction** (`core/observe/trace.py`): a `trace` tool reconstructs any session's
+  trajectory on demand -- the tools it called, their status, errors, truncations, evictions, tokens,
+  and where it stopped -- by reading the opencode session DB. This is the orchestrator's debugging
+  instrument for a failed or surprising subagent. Per-task outcome metrics (contracts, verified
+  handoffs, escalations) live in the scorecard (`core/observe/scorecard.py`), computed from the Event
+  Log.
+- **Toolset registry + health-gating** (`core/tools/registry.py`): named toolsets (memory, web,
+  delegate, skills) each with a health check. A tool whose backend is down returns a clean error at
+  call time, never a hang. The bridge gates tool calls on toolset health (cached, 5s TTL).
+- **Auxiliary-model routing** (`delegate_cheap`): the orchestrator's cheap sub-tasks (a summary, a
+  classification, a small transform) route to a fast worker slot instead of burning deep-stream
+  tokens. A one-shot call, no tools, no orchestration depth.
+- **Richer skill metadata** (`core/skills/`): SKILL.md frontmatter carries version, platforms, tags,
+  prerequisites, related_skills. A lenient loader parses real frontmatter (unquoted colons in long
+  descriptions) so no skill is silently dropped. The `skills` tool lists/inspects the surface -- the
+  read a skill-compilation loop would do before writing a new one.
+- **The scratch tier, bounded** (`core/scratch.py` + the `scratch_write` tool): worker artifacts
+  (output too big for a reply) are scoped per root session (`scratch/<thread>/...`) and expired by a
+  TTL cleanup -- no unbounded growth, no stale-artifact leaks across tasks. The per-result cap spill
+  now writes through it. This is the playbook's "memory without cleanup" rule applied to the
+  ephemeral artifact tier: everything in scratch is per-task and time-bounded.
+
 ## DEFERRED, revisited with evidence: the two standing triggers
 
 Reconsidered against the built system (both now have their stated preconditions met -- grounded
@@ -747,6 +813,57 @@ stabilized `make bench` provides. So the honest gate is not capability, it is a 
 signal. When the bench produces trustworthy repeatable numbers on the new core, a failure-trace ->
 typed-lesson loop (written to the Event Log, recalled at the start of later runs, rollback free via
 seq history) becomes a real layer. Until then it would compile noise. Deferred, on a measurement.
+
+## BUILT: the library plane -- the agent reads its own corpus
+
+The harness now reaches attune-library (~50k documents, 3.1M vectorized chunks, pgvector on
+priestess) as a first-class tool surface, with the library repo as the system of record and the
+harness a thin client over its API. Four tools: `library_search` (hybrid content, returns
+canonical_id#chunk hits), `library_read` (chunk windows / whole documents, pure SQL),
+`library_query` (structured metadata + count_by aggregations -- the stats/coverage instrument),
+and `library_fetch` (acquire a doi/arxiv/url/title INTO the corpus through the library's own
+fetch_and_queue; permanence, not reading). Alongside, and deliberately separate: `pdf_read`
+downloads a PDF from the web and extracts it to the task scratch dir for an in-context read --
+ephemeral, never touches the library. Reading a paper is not ingesting it.
+
+The load-bearing decision: the query embedder moved OFF fool (where it contended with the
+agent's DeepSeek orchestrator -- the library's own benchmarks measured a 41% chat-throughput hit
+under embedding saturation) onto a magus-local CPU llama-server (Qwen3-Embedding-0.6B Q8_0 GGUF,
+:8001, GPUs untouched). The model-match constraint (index and query must use one embedder) was
+verified empirically: cosine 0.9992 between magus-GGUF query vectors and the vLLM-built index
+vectors on identical text -- ranking-equivalent. The API runs as a magus user service
+(attune-api.service, :8082); all four tools are health-gated on its /health by the registry.
+
+## RESOLVED: magus could not reach priestess:5432 -- its IP had drifted off the firewall rule
+
+The library path's last blocker presented as a routing mystery: magus->priestess ICMP and SSH
+worked, postgres listened on 0.0.0.0:5432, no local firewall, yet every LAN node's TCP connect
+timed out -- fool's included, which proved it was never a magus problem. The mechanism, found in
+priestess's iptables: the 5432 allow rule was written for 192.168.1.10, magus's DOCUMENTED static
+IP (Homelab/network/addressing.md), but magus had silently regressed to NetworkManager DHCP
+(192.168.1.143) -- the systemd-networkd unit with the static .10 was still on disk, disabled. The
+firewall was correct; the node was wrong. Fixed per the doc's own convention: NetworkManager
+disabled, systemd-networkd re-enabled, magus back at .10, route metric 100 on the wired NIC. The
+pg_hba stale-IP rule (192.168.1.81/24) found along the way was the same failure one layer down:
+host-side static IPs outside the DHCP pool exist precisely so rules like these can't rot.
+Recorded in Homelab/network/addressing.md. (k3s on priestess, unused, owned the FORWARD chains
+that made the diagnosis noisy; teardown decided, WiFi fallback deliberately off for now.)
+
+## RESOLVED: a throwing web tool killed the whole run (found by the first live research task)
+
+The first end-to-end research run proved the knowledge-planes doctrine on contact (library_query
+coverage -> parallel library_search -> library_read to ground -> web_search for the 2025+ delta,
+in that order, unprompted) -- then died mid-task: the part table showed a web_search stuck in
+"running" for 14 minutes and the opencode process was gone. Two stacked causes. (1) camofox
+reaps an idle session after ~5 minutes, and a slow orchestrator reasoning turn is longer, so the
+second search's navigate hit a reaped tab. (2) The web plugin's execute() THREW across the tool
+boundary, and instead of becoming a tool error the model could adapt to, the exception killed the
+run process -- the part never even transitioned to error. The core tools never had this exposure:
+the bridge resolves failures into error results. The web plugin now matches that contract: every
+execute returns an error result (fail()), and open/search retry ONCE with a fresh tab
+(snapResilient) because the dominant failure is the reaper, not the page. click/type carry page
+state, so their error says plainly: the tab is gone, re-open with browse_open. Rule recorded: a
+tool exception must degrade to an answer, never to a process exit.
 
 ## References
 
