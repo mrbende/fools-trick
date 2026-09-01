@@ -7,5 +7,5 @@ model: deepseek-v4-flash
 base_url: https://opencode.ai/zen
 api_key_env: ZEN_API_KEY
 parallel: 4
-ctx_per_slot: 131072   # generous slot; worker_input_tokens (config.yaml) is what bounds a worker
-max_output: 24000
+ctx_per_slot: 512000   # Zen serves deepseek-v4-flash at 1M; the 131k figure was a 3080 Ti leftover
+max_output: 64000

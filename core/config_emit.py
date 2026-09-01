@@ -127,14 +127,14 @@ def _as_dict(cfg: Config) -> dict:
 def sync_worker_agent_models(cfg: Config) -> None:
     """Retarget the worker subagents' .md frontmatter model to the config-resolved worker model.
 
-    opencode merges opencode.json's agent block with .opencode/agents/<name>.md, and the .md
+    opencode merges opencode.json's agent block with opencode/agents/<name>.md, and the .md
     frontmatter model WINS (verified). So a base-json retarget cannot reach the worker agents; the
     only canonical sync is to rewrite the frontmatter from the resolved worker model. Without this,
     flipping deploy.yaml's worker backend leaves the workers pinned to a model the provider no
     longer serves (the exact stale-pin failure mode the retarget was built to kill).
     """
     wk_ref = f"{_OPENCODE_WORKER_PROVIDER}/{cfg.worker.model_id}"
-    agents_dir = _ROOT / ".opencode" / "agents"
+    agents_dir = _ROOT / "opencode" / "agents"
     if not agents_dir.is_dir():
         return
     import re

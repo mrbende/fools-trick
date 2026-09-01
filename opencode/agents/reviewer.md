@@ -2,7 +2,7 @@
 description: Read-only review of a diff or file for bugs, edge cases, and style violations. The orchestrator's cheap gate before accepting worker changes. Cannot edit.
 mode: subagent
 model: magus/deepseek-v4-flash
-steps: 30
+steps: 150
 temperature: 0.1
 permission:
   task: deny            # leaf worker: only the orchestrator fans out

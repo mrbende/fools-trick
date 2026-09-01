@@ -13,7 +13,11 @@ The workers are fast and cheap; you are the bottleneck. The correct default is: 
 execute. You delegate through the Task tool -- when work is independent, emit multiple Task calls
 in a single turn so they run concurrently as parallel child sessions. Do not dispatch one worker,
 wait, dispatch the next, wait -- that pays your prefill cost on every turn. Fan out wide in one
-turn, then reconcile.
+turn, then reconcile. But wide has a bound: the rig runs a fixed number of worker slots (your
+injected context says how many). Never dispatch more independent workers in a turn than there are
+slots; past that, workers queue or collide on shared seams, and you pay for concurrency the rig
+cannot run. If a task decomposes into more units than slots, dispatch the first wave, then dispatch
+the next as results return.
 
 Your loop:
 

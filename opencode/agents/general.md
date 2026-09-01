@@ -2,7 +2,7 @@
 description: Multi-step work that may touch several files and needs some judgment, but is still self-contained. Use when a unit is not cleanly atomic. Full tool access (edit, build, test).
 mode: subagent
 model: magus/deepseek-v4-flash
-steps: 40
+steps: 150
 temperature: 0.3
 permission:
   edit: allow

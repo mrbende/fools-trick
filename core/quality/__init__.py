@@ -56,7 +56,7 @@ def _tools() -> dict[str, str]:
 LIMITS = {"cc": 15, "cognitive": 15, "halstead": 80, "coverage_floor": 60.0}
 
 # Gate only the project's own source, never vendored deps, build dirs, or git submodules.
-_EXCLUDE_DIRS = {".bench-venv", ".bfcl-venv", "node_modules", "__pycache__", ".git", ".opencode",
+_EXCLUDE_DIRS = {".bench-venv", ".bfcl-venv", "node_modules", "__pycache__", ".git", "opencode",
                  ".mutmut-cache", "mutants", "dist", "build", ".mypy_cache", "spark"}
 # Scaffolding, not code the agent authors as the product -- covered by coverage, not per-file gates.
 _SCAFFOLD_TOPS = ("test", "bench", "deploy", "docs", "scripts")

@@ -2,7 +2,7 @@
 description: Fast read-only codebase search and question answering. Locates files, traces how a subsystem works, answers "where is X" and "how does Y work". Cannot edit. Cheap; dispatch liberally and in parallel.
 mode: subagent
 model: magus/deepseek-v4-flash
-steps: 30
+steps: 150
 temperature: 0.1
 permission:
   task: deny            # leaf worker: only the orchestrator fans out

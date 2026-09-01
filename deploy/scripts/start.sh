@@ -50,7 +50,10 @@ fi
 
 echo
 say "launching opencode (harness config active; working dir: $LAUNCH_CWD)"
-export OPENCODE_CONFIG="$ROOT/opencode.json"
-export OPENCODE_CONFIG_DIR="$ROOT/.opencode"
+# opencode discovers config from the cwd's own opencode.json + opencode/ -- it does NOT read an
+# OPENCODE_CONFIG path env var (only OPENCODE_CONFIG_CONTENT, an inline-JSON SDK override). So link
+# the harness config + dir into the launch dir, and opencode's normal discovery finds it.
 cd "$LAUNCH_CWD" || die "cannot cd to launch dir: $LAUNCH_CWD"
+[ -e opencode.json ] || ln -s "$ROOT/opencode.json" opencode.json
+[ -e opencode ] || ln -s "$ROOT/opencode" opencode
 exec opencode "$@"

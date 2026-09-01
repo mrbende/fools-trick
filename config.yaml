@@ -7,10 +7,10 @@
 memory:
   window_input_tokens: 640000     # aggressive: exploit DeepSeek V4 Pro's 1M context on Zen
   decode_headroom: 192000         # must be >= orchestrator max_output; 640000+192000 < 1000000
-  worker_input_tokens: 32000      # disciplined worker input window: keeps subagents ephemeral
-  worker_decode_headroom: 16000   # 32000+16000 = 48000 <= ctx_per_slot (131072), fits with room
+  worker_input_tokens: 400000     # use the Flash slot; a worker holds its whole task's working set
+  worker_decode_headroom: 64000   # 400000+64000 = 464000 <= ctx_per_slot (512000), fits with room
   worker_keep_recent: 4           # most-recent raw tool results never pruned
-  worker_tool_result_cap: 24000   # big slot lets a large read land whole; overage spills to the log
+  worker_tool_result_cap: 48000   # a large read lands whole; overage spills to the log
 
 # The agent roster. .opencode/agents/<worker>.md, opencode.base.json's task perms, and the test
 # roster must agree with this (a contract test asserts it).

@@ -1,5 +1,5 @@
 """Agent roster agreement. The roster is defined in config.yaml (agents.workers); the worker
-agent defs in .opencode/agents/, the task permissions in opencode.base.json, and the test.sh
+agent defs in opencode/agents/, the task permissions in opencode.base.json, and the test.sh
 parity roster must all match it, or delegation silently targets an agent that doesn't exist.
 stdlib unittest, no harness on disk.
 """
@@ -24,10 +24,10 @@ class TestRosterAgreement(unittest.TestCase):
         cls.primaries = set(cls.cfg.primaries)
 
     def test_agent_defs_match_config_workers(self):
-        agents_dir = os.path.join(ROOT, ".opencode", "agents")
+        agents_dir = os.path.join(ROOT, "opencode", "agents")
         on_disk = {os.path.splitext(f)[0] for f in os.listdir(agents_dir) if f.endswith(".md")}
         self.assertEqual(on_disk, self.workers,
-                         f".opencode/agents/ {sorted(on_disk)} != config workers {sorted(self.workers)}")
+                         f"opencode/agents/ {sorted(on_disk)} != config workers {sorted(self.workers)}")
 
     def test_base_json_task_perms_cover_workers(self):
         with open(os.path.join(ROOT, "opencode.base.json")) as fh:

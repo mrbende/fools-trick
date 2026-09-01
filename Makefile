@@ -5,7 +5,7 @@
 SHELL := /bin/bash
 S := ./deploy/scripts
 
-# Skills are allowlist-only in this repo: load ONLY .opencode/skills, never the
+# Skills are allowlist-only in this repo: load ONLY opencode/skills, never the
 # global (~/.config/opencode/skills) or external (~/.claude, ~/.agents) scans.
 # This keeps worker requests inside the 32k slot; the global catalog alone
 # overran it. Exported so every opencode invocation from the harness matches

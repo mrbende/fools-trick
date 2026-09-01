@@ -74,7 +74,7 @@ sys.exit(bad)
   if printf '%s' "$cfg" | python3 -c "$checker"; then
     ok "agents resolve (primaries->fool, workers->magus, small_model->magus)"
   else err "agent routing wrong"; fail=1; fi
-  for f in prompts/orchestrator.md AGENTS.md .opencode/agents/explore.md; do
+  for f in prompts/orchestrator.md AGENTS.md opencode/agents/explore.md; do
     [ -f "$ROOT/$f" ] && ok "present: $f" || { err "missing: $f"; fail=1; }
   done
 }
