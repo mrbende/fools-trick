@@ -23,7 +23,6 @@ class TestToolBodies(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         self.log = MemoryLog(
             db_path=os.path.join(self._tmp.name, "m.db"),
-            redis_url="redis://127.0.0.1:6399",
             resolve_thread=identity_resolver().resolve,
         )
         self.ctx = ToolContext(sessionID="s1", agent="build")
@@ -233,7 +232,6 @@ class TestPdfAndLibraryFetch(unittest.TestCase):
         os.environ["SCRATCH_DIR"] = self._tmp.name
         self.log = MemoryLog(
             db_path=os.path.join(self._tmp.name, "m.db"),
-            redis_url="redis://127.0.0.1:6399",
             resolve_thread=identity_resolver().resolve,
         )
         self.ctx = ToolContext(sessionID="s1", agent="build")

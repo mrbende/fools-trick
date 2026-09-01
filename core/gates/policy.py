@@ -90,14 +90,6 @@ def classify_command(cmd: str) -> Optional[str]:
     return None
 
 
-def is_code_file(path: str) -> bool:
-    return bool(path and _CODE_EXT.search(path))
-
-
-def is_verify_command(cmd: str) -> bool:
-    return bool(cmd and _VERIFY_CMD.search(cmd))
-
-
 def export_blocked_json() -> str:
     """Emit the blocked patterns as JSON for the in-process JS before-hook to load once.
 
@@ -106,24 +98,4 @@ def export_blocked_json() -> str:
     return json.dumps([{"source": src, "reason": reason} for src, reason in BLOCKED])
 
 
-@dataclass
-class VerifyState:
-    """Per-session dirty-file / verified-since tracker for the verify-gate.
 
-    Marking an edit sets verified_since False; running a verify command clears it. The gate
-    nudges when a session ends a turn with code edited but no verification since.
-    """
-
-    files: set[str] = field(default_factory=set)
-    verified_since: bool = True
-
-    def mark_edit(self, file: str) -> None:
-        self.files.add(file)
-        self.verified_since = False
-
-    def mark_verified(self) -> None:
-        self.verified_since = True
-        self.files.clear()
-
-    def needs_verify(self) -> bool:
-        return bool(self.files) and not self.verified_since

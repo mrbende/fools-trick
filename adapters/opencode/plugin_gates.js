@@ -171,9 +171,8 @@ function verifyGate(input, output) {
   const files = [...s.files].slice(0, 6).join(", ")
   output.text +=
     `\n\n---\n[verify-gate] Code was edited (${files}) but no test/build/lint has run ` +
-    `since. Ground "done" in a real signal: run the canonical check (make test / ` +
-    `make bench-e2e / the repo's own suite), read the result, and fix if red. Do not ` +
-    `report done on intent.`
+    `since. Ground "done" in a real signal: run the project's own check (its test/build/lint ` +
+    `command), read the result, and fix if red. Do not report done on intent.`
   // independent review, structural (producer != verifier), orchestrator-only (workers can't dispatch)
   const agent = input?.agent ?? ""
   if (agent === "build" || agent === "plan") {

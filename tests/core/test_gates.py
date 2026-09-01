@@ -7,12 +7,14 @@ import unittest
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
+import re
+
 from core.gates.policy import (  # noqa: E402
-    VerifyState,
     classify_command,
     export_blocked_json,
-    is_code_file,
-    is_verify_command,
+    export_gate_patterns_json,
+    export_protected_branches_json,
+    is_protected_branch,
 )
 
 
@@ -40,23 +42,30 @@ class TestHumanGate(unittest.TestCase):
         self.assertGreater(len(data), 5)
 
 
-class TestVerifyGate(unittest.TestCase):
-    def test_code_file_detection(self):
-        self.assertTrue(is_code_file("core/log/store.py"))
-        self.assertFalse(is_code_file("README.md"))
+class TestGatePatterns(unittest.TestCase):
+    """The canonical gate patterns production loads (the JS gate reads these via the export)."""
 
-    def test_verify_command_detection(self):
-        self.assertTrue(is_verify_command("make test"))
-        self.assertTrue(is_verify_command("pytest tests/"))
-        self.assertFalse(is_verify_command("echo done"))
+    def setUp(self):
+        d = json.loads(export_gate_patterns_json())
+        self.code_ext = re.compile(d["code_ext"])
+        self.verify_cmd = re.compile(d["verify_cmd"])
 
-    def test_state_machine(self):
-        s = VerifyState()
-        self.assertFalse(s.needs_verify())          # nothing edited
-        s.mark_edit("core/log/store.py")
-        self.assertTrue(s.needs_verify())            # edited, not verified
-        s.mark_verified()
-        self.assertFalse(s.needs_verify())           # cleared
+    def test_code_file_pattern(self):
+        self.assertTrue(self.code_ext.search("core/log/store.py"))
+        self.assertFalse(self.code_ext.search("README.md"))
+
+    def test_verify_command_pattern(self):
+        self.assertTrue(self.verify_cmd.search("make test"))
+        self.assertTrue(self.verify_cmd.search("pytest tests/"))
+        self.assertTrue(self.verify_cmd.search("make check-quality"))
+        self.assertFalse(self.verify_cmd.search("echo done"))
+
+    def test_protected_branches(self):
+        self.assertTrue(is_protected_branch("master"))
+        self.assertTrue(is_protected_branch("MAIN"))
+        self.assertTrue(is_protected_branch("staging"))
+        self.assertFalse(is_protected_branch("feature/x"))
+        self.assertEqual(json.loads(export_protected_branches_json()), ["master", "main", "staging"])
 
 
 if __name__ == "__main__":

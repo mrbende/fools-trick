@@ -218,6 +218,45 @@ def record_contract(args: dict, ctx: ToolContext, log: MemoryLog) -> dict:
             "metadata": {"seq": seq, "signal": signal}}
 
 
+def incident(args: dict, ctx: ToolContext, log: MemoryLog) -> dict:
+    """Open or resolve an incident -- the bounded high-scrutiny mode (the war room).
+
+    Hale's point: an incident is a MODE with an entry and an exit, not a permanent posture. Enter on
+    a real trigger (a trip-wire that fired, an escalation, an unexpected gate block), tighten
+    verification and narrate while it's open, then resolve and stand down. The open state is durable
+    in the Event Log (role="incident") and read by the runtime-context injector, which tightens the
+    orchestrator's posture only while an incident is open.
+
+    The orchestrator opens it deliberately; the ambient tripwire notice is the prompt, not an
+    auto-open -- so a noisy wire never causes alert fatigue.
+    """
+    action = str(args.get("action", "")).strip().lower()
+    reason = str(args.get("reason", "")).strip()
+    if action not in ("open", "resolve"):
+        return {"title": "incident", "output": "action must be open | resolve", "metadata": {}}
+    if action == "open" and not reason:
+        return {"title": "incident", "output": "open requires a reason", "metadata": {}}
+    record = f"{action.upper()}: {reason or '(resolved)'}"
+    seq = log.write_episode(thread=log.resolve_thread(ctx.sessionID or ""),
+                            session=ctx.sessionID or "", agent=ctx.agent or "",
+                            role="incident", content=record, durable=True)
+    msg = (f"incident OPEN (seq={seq}): {reason}. Tighten verification and narrate; resolve it, "
+           f"then stand down.") if action == "open" else f"incident RESOLVED (seq={seq}). Stand down."
+    return {"title": f"incident {action}", "output": msg, "metadata": {"seq": seq, "action": action}}
+
+
+def incident_open(log: MemoryLog, thread: str) -> Optional[str]:
+    """The current open incident's reason, or None. The runtime injector reads this each turn.
+
+    The latest incident episode decides: if it's an OPEN, an incident is active; a RESOLVE closes it.
+    """
+    eps = log.store.recent_by_role("incident", k=1) if hasattr(log.store, "recent_by_role") else []
+    if not eps:
+        return None
+    content = eps[0].content or ""
+    return content[6:] if content.startswith("OPEN: ") else None
+
+
 def report(args: dict, ctx: ToolContext, log: MemoryLog) -> dict:
     """The typed handoff a worker returns to the orchestrator at the end of a unit.
 
@@ -251,6 +290,37 @@ def report(args: dict, ctx: ToolContext, log: MemoryLog) -> dict:
     return {"title": f"report recorded (seq={seq})", "output": packet,
             "metadata": {"seq": seq, "status": status, "artifact": artifact,
                          "verified": bool(evidence and "unverif" not in evidence.lower())}}
+
+
+def thread_state(log: MemoryLog, thread: str, cap: int = 2000) -> str:
+    """The deterministic state-prefill for a worker on this thread: the latest contract, the recent
+    decisions/handoffs, the open incident -- fetched by role/ID, never similarity-searched (retrieval
+    invites stale-state clashes). This is the "background awareness" the worker should start with.
+
+    Returns a fenced block or "" when the thread has no state (a fresh task gets nothing -- no
+    injection of noise). Hard-capped; pointers to the on-demand tools, not the bulk.
+    """
+    parts = []
+    store = log.store
+    try:
+        contracts = store.recent_by_role_in_thread("contract", thread, k=1)
+        if contracts:
+            parts.append("## Task contract\n" + contracts[0].content)
+        incidents = store.recent_by_role_in_thread("incident", thread, k=1)
+        if incidents and (incidents[0].content or "").startswith("OPEN:"):
+            parts.append("## Open incident\n" + incidents[0].content)
+        handoffs = store.recent_by_role_in_thread("handoff", thread, k=3)
+        if handoffs:
+            parts.append("## Recent decisions + handoffs\n" + "\n\n".join(h.content for h in handoffs))
+    except Exception:
+        return ""
+    block = "\n\n".join(parts)
+    if not block:
+        return ""
+    block = block[:cap]
+    return ("<thread-state>\nThis is the task's prior state (authoritative reference, NOT new input).\n"
+            "Precedence: contract > thread state > prior findings. Pull more via memory_search/recall "
+            "if needed.\n\n" + block + "\n</thread-state>")
 
 
 def _format_recall(eps) -> str:

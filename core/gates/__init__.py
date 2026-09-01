@@ -8,9 +8,10 @@ runs in-process while the policy is owned here.
 
 from core.gates.policy import (
     BLOCKED,
-    VerifyState,
+    PROTECTED_BRANCHES,
     classify_command,
     export_blocked_json,
-    is_code_file,
-    is_verify_command,
+    export_gate_patterns_json,
+    export_protected_branches_json,
+    is_protected_branch,
 )

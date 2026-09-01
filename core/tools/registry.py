@@ -110,7 +110,7 @@ def _pdf_health() -> str | None:
 TOOLSETS = {
     "memory": Toolset(
         name="memory",
-        tools=("memory_write", "memory_search", "recall", "note", "promote", "record_contract", "report", "trace", "tripcheck"),
+        tools=("memory_write", "memory_search", "recall", "note", "promote", "record_contract", "report", "incident", "trace", "tripcheck"),
         health=_core_health,
     ),
     "delegate": Toolset(
@@ -135,7 +135,7 @@ TOOLSETS = {
     ),
     "library_search": Toolset(
         name="library_search",
-        tools=("library_search",),
+        tools=("library_search", "library_prior"),
         health=_library_search_health,
     ),
     "pdf": Toolset(

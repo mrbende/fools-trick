@@ -13,11 +13,11 @@ import math
 
 from core.types import Turn
 
-# Conservative divisor: markup-dense payloads (web snapshots, code dumps) tokenize near
+# The token estimator's divisor. markup-dense payloads (web snapshots, code dumps) tokenize near
 # ~2.5 chars/token, and this estimate gates a HARD wall (the worker slot). The error costs are
 # asymmetric: over-estimating costs one recoverable recall; under-estimating sends a request the
-# server rejects outright. So the estimator must err OVER. (Was 3.5, which undercounted web
-# snapshots by ~40% and let a 34.6k-token request onto a 32768 slot.)
+# server rejects outright. So it must err OVER. The single source of truth is config.chars_per_token
+# (the adapter's estimator reads the same value from the config snapshot -- no mirrored constant).
 _CHARS_PER_TOKEN = 2.5
 
 

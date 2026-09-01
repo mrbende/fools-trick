@@ -86,34 +86,6 @@ class EpisodeStore:
         self._db.commit()
         return int(cur.lastrowid)
 
-    def append_if_absent(
-        self,
-        *,
-        thread: str,
-        session: str,
-        agent: Optional[str],
-        role: Optional[str],
-        content: str,
-        ts: Optional[int] = None,
-    ) -> Seq:
-        """Idempotent append for the drain path: if an identical episode (same thread, ts,
-        content) already exists, return its existing seq instead of a duplicate.
-
-        The drain moves a stream entry to SQLite then acks it; a crash between the two redelivers
-        the entry, which would otherwise mint a duplicate episode with a NEW seq and silently
-        invalidate any eviction index that captured the original address. Dedup on the
-        (thread, ts, content) fingerprint closes that redelivery hole.
-        """
-        ts = ts if ts is not None else int(time.time() * 1000)
-        row = self._db.execute(
-            "SELECT id FROM episodes WHERE thread = ? AND ts = ? AND content = ? LIMIT 1",
-            (thread, ts, content),
-        ).fetchone()
-        if row:
-            return int(row[0])
-        return self.append(thread=thread, session=session, agent=agent, role=role,
-                           content=content, ts=ts)
-
     def search(self, *, thread: str, query: str, k: int = 10,
                role: Optional[str] = None, agent: Optional[str] = None,
                after_seq: Optional[Seq] = None, before_seq: Optional[Seq] = None) -> list[Episode]:
@@ -154,6 +126,16 @@ class EpisodeStore:
             "SELECT id, thread, session, agent, role, content, ts FROM episodes "
             "WHERE role = ? ORDER BY id DESC LIMIT ?",
             (role, k),
+        ).fetchall()
+        return [self._row(r) for r in rows]
+
+    def recent_by_role_in_thread(self, role: str, thread: str, k: int = 5) -> list[Episode]:
+        """Most recent N episodes of a role within one thread (the worker state-prefill reads the
+        contract/handoffs for ITS thread, not globally)."""
+        rows = self._db.execute(
+            "SELECT id, thread, session, agent, role, content, ts FROM episodes "
+            "WHERE role = ? AND thread = ? ORDER BY id DESC LIMIT ?",
+            (role, thread, k),
         ).fetchall()
         return [self._row(r) for r in rows]
 

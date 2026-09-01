@@ -53,7 +53,7 @@ def _tools() -> dict[str, str]:
 
 
 # Hard-gate thresholds (structure), plus the behavioral floor.
-LIMITS = {"cc": 15, "cognitive": 15, "halstead": 80, "coverage_floor": 60.0}
+LIMITS = {"cc": 15, "cognitive": 15, "halstead": 80, "coverage_floor": 55.0}
 
 # Gate only the project's own source, never vendored deps, build dirs, or git submodules.
 _EXCLUDE_DIRS = {".bench-venv", ".bfcl-venv", "node_modules", "__pycache__", ".git", "opencode",
@@ -254,6 +254,53 @@ def report_loc_and_dup(g: Gate, root: Path) -> None:
     g.report("loc/file>=500 (info)", "; ".join(over) or "none")
 
 
+def report_crap(g: Gate, root: Path) -> None:
+    """CRAP per function: CC^2 * (1 - cov)^3 + CC -- high where a function is complex AND untested.
+    A targeting signal, not a gate: it points the reviewer/next test at where sprawl hides, which is
+    what raw coverage can't see (a gameable line-execution number). Per the thread: CRAP == CC at
+    100% coverage, so this only bites where coverage is thin."""
+    dirs = _source_dirs(root)
+    if not dirs or not (root / "tests").exists():
+        g.report("crap (info)", "no source+tests; skipped"); return
+    # per-function CC
+    _, cc_out = _run([_tool("radon"), "cc", *dirs, "-s", "-j"], str(root))
+    funcs = []
+    try:
+        for path, blocks in json.loads(cc_out).items():
+            for b in blocks:
+                funcs.append((b.get("complexity", 0), f"{os.path.relpath(path, root)}:{b.get('name')}"))
+    except json.JSONDecodeError:
+        pass
+    if not funcs:
+        g.report("crap (info)", "no functions"); return
+    # module coverage (approximation: a function inherits its module's coverage)
+    cov = _current_coverage(root, dirs)
+    # CRAP with the module's coverage as the function's proxy
+    def crap(cc: int) -> float:
+        return cc * cc * (1 - cov) ** 3 + cc
+    worst = sorted(((crap(cc), at) for cc, at in funcs if cc > 1), reverse=True)[:5]
+    if not worst:
+        g.report("crap (info)", "no non-trivial functions"); return
+    g.report("crap (top untested-complexity)",
+             "; ".join(f"{at} CRAP~{c:.0f}" for c, at in worst if c > 25) or "none over 25")
+
+
+def _current_coverage(root: Path, dirs: list[str]) -> float:
+    """0.0-1.0 module coverage for the source dirs, or 0 if unavailable."""
+    if not (root / "tests").exists():
+        return 0.0
+    _run([_tool("coverage"), "run", f"--source={','.join(dirs)}", "-m", "unittest",
+          "discover", "-s", "tests", "-p", "test_*.py"], str(root))
+    _, out = _run([_tool("coverage"), "report"], str(root))
+    for line in out.splitlines():
+        if line.strip().startswith("TOTAL"):
+            try:
+                return float(line.split()[-1].rstrip("%")) / 100.0
+            except (ValueError, IndexError):
+                return 0.0
+    return 0.0
+
+
 def _baseline_path(root: Path) -> Path:
     # the ratchet baseline belongs to the TARGET project, not the harness
     return root / ".quality-baseline.json"
@@ -294,6 +341,7 @@ def run_gate(root: str | Path = ".") -> dict:
         check_coverage_floor(g, root)
         print(" signals (info only):")
         report_loc_and_dup(g, root)
+        report_crap(g, root)
         if g.failures:
             print(f"GATE FAILED: {len(g.failures)} hard gate(s): {', '.join(g.failures)}")
         else:

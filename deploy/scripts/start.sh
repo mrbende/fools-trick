@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# One-command entrypoint: regenerate config, start redis, verify auth, launch opencode with the
+# One-command entrypoint: regenerate config, verify auth, launch opencode with the
 # harness config in the caller's cwd. Cloud rigs serve nothing locally, so this does not run up.sh;
 # for a self-hosted rig, `make up` first.
 
@@ -18,7 +18,6 @@ else
   die "config render failed (run: python3 -m core.config --check)"
 fi
 
-"$HERE/up.sh" redis || die "redis failed to start"
 "$HERE/up.sh" camofox   # web/research layer; warns (does not die) if unavailable
 
 if [ -n "${ZEN_API_KEY:-}" ]; then

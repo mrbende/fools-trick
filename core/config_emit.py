@@ -57,7 +57,6 @@ def _shell_exports(cfg: Config) -> str:
         "WORKER_TOOL_RESULT_CAP": cfg.worker_tool_result_cap,
         "MEMORY_DB": cfg.memory_db,
         "MEMORY_ENABLED": "1" if cfg.memory_enabled else "0",
-        "REDIS_URL": cfg.redis_url,
         "SCRATCH_DIR": cfg.scratch_dir,
     }
     lines = [f"export {k}={_sh_quote(str(v))}" for k, v in pairs.items()]
@@ -82,8 +81,6 @@ def _env_exports(cfg: Config) -> str:
         "LOCAL_MIN_FREE_GIB": d.local_min_free_gib,
         "NAS_MIN_FREE_GIB": d.nas_min_free_gib,
         "WORKER_UNIT": d.worker_unit,
-        "REDIS_CONTAINER": d.redis_container,
-        "REDIS_IMAGE": d.redis_image,
         "SPARK_REMOTE_URL": d.spark_remote_url,
         "FOOL_SPARK_DIR": d.spark_fool_dir,
         "FOOL_ABLATE": d.fool_ablate,
@@ -96,7 +93,6 @@ def _env_exports(cfg: Config) -> str:
         "SPARK_DIR_LOCAL": str(_ROOT / "spark"),
         "OPENCODE_PROJECT_DIR": str(_ROOT),
         # derived / operational values the scripts read
-        "REDIS_PORT": _redis_port(cfg.redis_url),
         "WORKER_MODEL_PATH": f"{d.local_models}/qwen3.8-27b-obliterated/{cfg.weights.file}",
         "WORKER_BASE_PATH": f"{d.local_models}/qwen3.8-27b/Qwen3.8-27B-IQ4_XS.gguf",
         "FOOL_STARTUP_WAIT": os.environ.get("FOOL_STARTUP_WAIT", "3600"),
@@ -108,10 +104,6 @@ def _env_exports(cfg: Config) -> str:
     lines += [f"export {k}={_sh_quote(str(v))}" for k, v in dep_pairs.items()]
     return "\n".join(lines)
 
-
-def _redis_port(redis_url: str) -> int:
-    from urllib.parse import urlparse
-    return urlparse(redis_url).port or 6379
 
 
 def _sh_quote(s: str) -> str:
@@ -181,7 +173,7 @@ def render_opencode(cfg: Config, base: dict) -> dict:
             "options": {"baseURL": wk.base_url, "apiKey": wk_key, "timeout": False},
             "models": {
                 wk.model_id: {
-                    "name": f"{wk.model_id} {cfg.weights.quant}",
+                     "name": wk.model_id,
                     "tool_call": True,
                     "attachment": True,
                     "reasoning": True,

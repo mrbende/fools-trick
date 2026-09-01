@@ -35,7 +35,7 @@ class TestScorecard(unittest.TestCase):
             db = str(Path(d) / "m.db")
             os.environ["MEMORY_DB"] = db
             try:
-                log = MemoryLog(db, "redis://127.0.0.1:6399")  # dead redis -> sqlite path
+                log = MemoryLog(db)
                 for role, content in (("contract", "GOAL: g\nSIGNAL: make test"),
                                       ("handoff", "STATUS: done\nEVIDENCE: pytest passed")):
                     log.write_episode(thread="t", session="s", agent="a", role=role,
@@ -117,7 +117,7 @@ class TestMemoryEdgePaths(unittest.TestCase):
 
     def _log(self, db: str):
         from core.log.log import MemoryLog
-        return MemoryLog(db, "redis://127.0.0.1:6399")
+        return MemoryLog(db)
 
     def test_empty_writes_rejected(self):
         from core.tools import memory
@@ -150,7 +150,7 @@ class TestMemoryHappyPaths(unittest.TestCase):
 
     def _log(self, db: str):
         from core.log.log import MemoryLog
-        return MemoryLog(db, "redis://127.0.0.1:6399")  # dead redis -> sqlite path
+        return MemoryLog(db)
 
     def test_record_contract_report_promote_note_write(self):
         from core.tools import memory
@@ -215,6 +215,51 @@ class TestConfigMainDirect(unittest.TestCase):
             # render to a temp copy of agents so the .md sync doesn't touch the real repo
             self.assertEqual(self._main("--opencode"), 0)
             self.assertIn('"provider"', self._out)
+
+
+class TestContextPriming(unittest.TestCase):
+    """thread_state (worker prefill) + library_prior (the gated associative prior)."""
+
+    def test_thread_state_scoped_and_fenced(self):
+        from core.log.log import MemoryLog
+        from core.tools import memory
+        with tempfile.TemporaryDirectory() as d:
+            log = MemoryLog(str(Path(d) / "m.db"))
+            try:
+                log.write_episode(thread="T1", session="s", agent="build", role="contract",
+                                  content="GOAL: fix auth\nSIGNAL: pytest x", durable=True)
+                log.write_episode(thread="T1", session="s", agent="general", role="handoff",
+                                  content="STATUS: done\nARTIFACT: auth.py:45", durable=True)
+                log.write_episode(thread="T2", session="s", agent="build", role="contract",
+                                  content="GOAL: WRONG THREAD", durable=True)
+                out = memory.thread_state(log, "T1")
+                self.assertIn("fix auth", out)
+                self.assertIn("auth.py:45", out)
+                self.assertNotIn("WRONG THREAD", out)
+                self.assertIn("<thread-state>", out)
+                # empty thread injects nothing
+                self.assertEqual(memory.thread_state(log, "T_EMPTY"), "")
+            finally:
+                log.close()
+
+    def test_thread_state_shows_open_incident_only(self):
+        from core.log.log import MemoryLog
+        from core.tools import memory
+        with tempfile.TemporaryDirectory() as d:
+            log = MemoryLog(str(Path(d) / "m.db"))
+            try:
+                log.write_episode(thread="T", session="s", agent="build", role="incident",
+                                  content="OPEN: worker OOM", durable=True)
+                self.assertIn("worker OOM", memory.thread_state(log, "T"))
+                log.write_episode(thread="T", session="s", agent="build", role="incident",
+                                  content="RESOLVE:", durable=True)
+                self.assertNotIn("Open incident", memory.thread_state(log, "T"))
+            finally:
+                log.close()
+
+    def test_library_prior_gates_empty_and_bad_input(self):
+        from core.tools import library
+        self.assertFalse(library.library_prior({"query": ""}, None, None)["metadata"]["injected"])
 
 
 if __name__ == "__main__":

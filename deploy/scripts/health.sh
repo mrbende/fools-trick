@@ -12,9 +12,12 @@ fail=0
 probe() {
   # probe <label> <base_url> <model_id>
   local label="$1" url="$2" model="$3"
-  if ! http_ok "$url/v1/models"; then err "$label: /v1/models unreachable at $url"; fail=1; return; fi
+  # cloud endpoints require the API key; self-hosted servers are unauthenticated (empty header is a no-op).
+  local auth=()
+  [ -n "${ZEN_API_KEY:-}" ] && auth=(-H "Authorization: Bearer $ZEN_API_KEY")
+  if ! curl -fsS --max-time 5 "${auth[@]}" "$url/v1/models" >/dev/null 2>&1; then err "$label: /v1/models unreachable at $url"; fail=1; return; fi
   local out
-  out="$(curl -fsS --max-time "${HEALTH_TIMEOUT:-120}" "$url/v1/chat/completions" \
+  out="$(curl -fsS --max-time "${HEALTH_TIMEOUT:-120}" "${auth[@]}" "$url/v1/chat/completions" \
     -H 'Content-Type: application/json' \
     -d "{\"model\":\"$model\",\"messages\":[{\"role\":\"user\",\"content\":\"reply with the single word: ok\"}],\"max_tokens\":100,\"temperature\":0}" 2>/dev/null \
     | python3 -c 'import sys,json;m=json.load(sys.stdin)["choices"][0]["message"];print((m.get("content") or m.get("reasoning_content") or "").strip())' 2>/dev/null)"

@@ -23,7 +23,7 @@ bench venv (datasets). HF token auto-read.
 """
 import argparse, json, random, re, sys, time, urllib.request
 import ui
-from shared import chat, answer_text
+from shared import chat, answer_text, auth_headers
 
 try:
     from datasets import load_dataset
@@ -38,7 +38,7 @@ def chat_tools(url, model, content, tools, max_tokens, timeout=600):
             "max_tokens": max_tokens, "temperature": 0}
     req = urllib.request.Request(url + "/v1/chat/completions",
                                  data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers=auth_headers())
     t0 = time.perf_counter()
     d = json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode())
     d["_wall"] = time.perf_counter() - t0

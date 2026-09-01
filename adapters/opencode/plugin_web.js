@@ -75,10 +75,28 @@ function fail(name, e, hint) {
 // ensureTab -> navigate -> snapshot, the shared open/search body. camofox reaps a session after
 // ~5min idle, and a slow orchestrator turn is longer -- so one fresh retry on failure: the first
 // error is usually the reaper, not the page.
+// Loopback rewrite: the browser's "localhost" is the shell's loopback only if they share a network
+// namespace; on this rig camofox and the dev server are the same host but the browser resolves
+// localhost to itself. Rewrite loopback to the host's LAN interface so a locally-served app the
+// agent wants to browse (a dev server bound to 0.0.0.0) is reachable. CAMOFOX_LOOPBACK_HOST
+// overrides the default. NOTE: this reaches services bound to the LAN interface (0.0.0.0), not
+// services bound loopback-only (127.0.0.1) -- those need a public bind to be browsable.
+const LOOPBACK_HOST = process.env.CAMOFOX_LOOPBACK_HOST || "192.168.1.10"
+function rewriteLoopback(url) {
+  try {
+    const u = new URL(url)
+    if (u.hostname === "localhost" || u.hostname === "127.0.0.1" || u.hostname === "[::1]") {
+      u.hostname = LOOPBACK_HOST
+      return u.toString()
+    }
+  } catch { /* not a parseable URL; leave as-is */ }
+  return url
+}
+
 async function snap($, url) {
   const tab = await ensureTab($)
   const id = tabId(tab)
-  await call(`/tabs/${id}/navigate`, { url })
+  await call(`/tabs/${id}/navigate`, { url: rewriteLoopback(url) })
   const s = await call(`/tabs/${id}/snapshot`, {}, "GET")
   return { id, body: typeof s === "string" ? s : JSON.stringify(s, null, 2) }
 }

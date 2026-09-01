@@ -27,9 +27,10 @@ FILLER = (
 
 
 def post(url, path, body, timeout, stream=False):
+    from shared import auth_headers
     req = urllib.request.Request(
         url + path, data=json.dumps(body).encode(),
-        headers={"Content-Type": "application/json"})
+        headers=auth_headers())
     return urllib.request.urlopen(req, timeout=timeout)
 
 

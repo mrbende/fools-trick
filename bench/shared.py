@@ -38,6 +38,18 @@ HARD_REFUSAL = re.compile(
 
 
 # --- chat completion (one implementation) ------------------------------------
+def auth_headers():
+    """HTTP headers for the endpoint under test. A cloud endpoint needs its API key (Bearer);
+    self-hosted servers are unauthenticated. A real User-Agent is required -- cloud gateways
+    (Zen) 403 the default Python-urllib UA. The key comes from the environment (ZEN_API_KEY)."""
+    import os
+    h = {"Content-Type": "application/json", "User-Agent": "fools-trick/1.0"}
+    key = os.environ.get("ZEN_API_KEY")
+    if key:
+        h["Authorization"] = f"Bearer {key}"
+    return h
+
+
 def chat(url, model, content, max_tokens, timeout=600, temperature=0):
     """POST a single user message to <url>/v1/chat/completions. Returns the raw response dict
     with an added "_wall" (seconds). url is the base WITHOUT /v1."""
@@ -45,7 +57,7 @@ def chat(url, model, content, max_tokens, timeout=600, temperature=0):
             "max_tokens": max_tokens, "temperature": temperature}
     req = urllib.request.Request(url + "/v1/chat/completions",
                                  data=json.dumps(body).encode(),
-                                 headers={"Content-Type": "application/json"})
+                                 headers=auth_headers())
     t0 = time.perf_counter()
     d = json.loads(urllib.request.urlopen(req, timeout=timeout).read().decode())
     d["_wall"] = time.perf_counter() - t0

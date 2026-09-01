@@ -2,7 +2,7 @@
 // the per-turn transform applies the core's eviction decision in-process.
 
 import { tool } from "@opencode-ai/plugin"
-import { callTool, planContext, cfgNum, configSnapshot } from "./bridge.js"
+import { callTool, planContext, cfgNum, configSnapshot, incidentStatus, threadState } from "./bridge.js"
 import {
   agentOf, sessionOf, providerOf, inputTokens, applyEvict, toWorkerTurns, toOrchestratorTurns,
 } from "./shape.js"
@@ -138,6 +138,21 @@ export default async () => {
           return await callTool("report", args, ctx)
         },
       }),
+      incident: tool({
+        description:
+          "Open or resolve an incident -- the bounded high-scrutiny mode (the war room). Open on a " +
+          "real trigger (a trip-wire that fired, an escalation, an unexpected gate block, or your own " +
+          "judgment that something is wrong). While an incident is open your posture tightens: verify " +
+          "before each step, narrate, resolve before normal work. Resolve it when cleared and stand " +
+          "down. Do not leave it open.",
+        args: {
+          action: tool.schema.string().describe("open | resolve."),
+          reason: tool.schema.string().optional().describe("Why (required for open): the trigger or what's wrong."),
+        },
+        async execute(args, ctx) {
+          return await callTool("incident", args, ctx)
+        },
+      }),
       library_search: tool({
         description:
           "Hybrid content search over the agent's own research library (attune-library, ~50k " +
@@ -152,6 +167,22 @@ export default async () => {
         },
         async execute({ query, k, collection }, ctx) {
           return await callTool("library_search", { query, k, collection }, ctx)
+        },
+      }),
+      library_prior: tool({
+        description:
+          "Get the associative prior for a task: a small, gated, labeled block of the most relevant " +
+          "library material to pre-prime a dispatch (a worker brief or your own planning). Only " +
+          "returns a block when a hit clears the relevance floor -- a task with no real corpus overlap " +
+          "gets an empty prior (never a distractor). Use it at dispatch time to ground a worker or a " +
+          "research task in what the corpus already knows.",
+        args: {
+          query: tool.schema.string().describe("What the task is about (the topic, in declarative terms)."),
+          floor: tool.schema.number().optional().describe("Relevance floor (default 0.45); hits below it are dropped."),
+          cap: tool.schema.number().optional().describe("Max chunks (default 5)."),
+        },
+        async execute(args, ctx) {
+          return await callTool("library_prior", args, ctx)
         },
       }),
       library_read: tool({
@@ -274,13 +305,27 @@ export default async () => {
     },
 
     // Inject each agent's config-derived context+job each turn so the role split tracks config.yaml.
+    // If an incident is open, the orchestrator's posture tightens (the war room): verify before each
+    // step, narrate, resolve it, then stand down. The state lives in the Event Log (incident tool).
     "experimental.chat.system.transform": async (input, output) => {
       if (!output || !Array.isArray(output.system)) return
       const block = runtimeContextBlock(input)
       if (!block) return
+      let extra = ""
+      const cfg = configSnapshot()
+      const modelID = input?.model?.id || input?.model?.modelID || ""
+      const onWorker = !!(cfg?.worker) && modelID === cfg.worker.model_id
+      if (!onWorker) {
+        const open = await incidentStatus()
+        if (open) extra = `\n\nAn incident is open (${open}). Tighten: verify before each step, narrate what you're doing, and resolve it before continuing normal work.`
+      } else {
+        // a worker starts with its task's state already present (background awareness, not retrieval)
+        const state = await threadState(input?.sessionID || "")
+        if (state) extra = "\n\n" + state
+      }
       // a second system block breaks the worker chat template ("System message must be at the beginning")
-      if (output.system.length) output.system[output.system.length - 1] += "\n\n" + block
-      else output.system.push(block)
+      if (output.system.length) output.system[output.system.length - 1] += "\n\n" + block + extra
+      else output.system.push(block + extra)
     },
 
     "experimental.chat.messages.transform": async (_input, output) => {
@@ -299,13 +344,29 @@ export default async () => {
       await capToolResult(input, output)
     },
 
-    // drain the write-stream to SQLite at each turn boundary (no writes park in the ephemeral tier)
-    "experimental.text.complete": async () => { callTool("drain", {}, {}) },
+    // Ambient trip-wire: at the orchestrator's turn boundary, surface a regression INTO the next
+    // turn when a wire fires -- the "crickets stopped" signal (Hale: don't make the operator watch a
+    // dashboard; a deviation should announce itself). Runs only for the orchestrator, only injects
+    // when a wire actually fires, so a healthy session pays nothing.
+    "experimental.text.complete": async (input, output) => {
+      callTool("drain", {}, {})
+      if (input?.agent !== "build" && input?.agent !== "plan") return
+      try {
+        const r = await callTool("tripcheck", {}, { sessionID: input?.sessionID || "" })
+        const fired = Number(r?.metadata?.fired || 0)
+        if (fired > 0 && output && typeof output.text === "string") {
+          output.text += `\n\n---\n[tripwire] ${fired} trip-wire(s) fired this turn:\n${r.output}\n` +
+            `A regression is a signal, not a vibe -- re-plan or escalate rather than pushing on.`
+        }
+      } catch { /* observability must never break a turn */ }
+    },
   }
 
   // Orchestrator: lossless slide. The core decides which turns to drop; the adapter persists
-  // them to the Event Log (lossless) and removes them from the array.
+  // them to the Event Log (lossless) and removes them from the array. Early-exit under budget so
+  // we don't serialize the whole view to a subprocess on every turn (parity with pruneWorker).
   function slideOrchestrator(msgs, output) {
+    if (inputTokens(msgs) <= WINDOW_INPUT) return
     const turns = toOrchestratorTurns(msgs)
     const d = planContext("slide", { turns, inputBudget: WINDOW_INPUT, keepTail: 6 })
     if (!d || !d.changed) return
@@ -330,12 +391,14 @@ export default async () => {
     })
     if (!d || !d.changed) return
 
-    // The core decided which results to evict; the adapter's one compaction applier (applyEvict)
-    // marks them and hands back their outputs, which we then persist durably + index by seq so the
-    // worker can recover them. Persist must reference the seq, so persist-then-index per result.
+    // The core decides what to evict AND what to persist (d.persist is the canonical payload). The
+    // adapter's one job is the in-process view mutation (applyEvict) + persisting each payload and
+    // indexing its recovery seq onto the evicted part. The content derives from the core, not re-read.
+    const byCallID = new Map((d.persist || []).map((p) => [p.call_id ?? p.callID, p]))
     const evicted = applyEvict(msgs, d.evict_call_ids)
     for (const { callID, output: text, msg, part } of evicted) {
-      const r = await callTool("memory_write", { content: text, durable: true }, { sessionID: sid, agent })
+      const payload = byCallID.get(callID)
+      const r = await callTool("memory_write", { content: (payload && payload.content) ?? text, durable: true }, { sessionID: sid, agent })
       insertIndexNote(msg, part, r?.metadata?.seq)
     }
     rollupIndexNotes(msgs)

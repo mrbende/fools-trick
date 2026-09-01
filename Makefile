@@ -41,7 +41,7 @@ preflight: ## read-only readiness check: tools, disk, mounts, weights, fool sync
 
 ##@ Run
 .PHONY: start
-start: ## ONE COMMAND: load .env, regen config, start redis, launch interactive opencode (cloud rig)
+start: ## ONE COMMAND: load .env, regen config, launch interactive opencode (cloud rig)
 	@$(S)/start.sh
 .PHONY: up
 up: ## start both: worker on magus + orchestrator on fool
@@ -158,12 +158,6 @@ fool-logs: ## tail only the orchestrator log (fool)
 .PHONY: fool-sync
 fool-sync: ## sync fool's spark clone to this repo's pinned commit
 	@$(S)/fool-sync.sh
-.PHONY: redis-up
-redis-up: ## start only the redis memory container (magus)
-	@$(S)/up.sh redis
-.PHONY: redis-down
-redis-down: ## stop the redis memory container (short-term memory is ephemeral; SQLite persists)
-	@$(S)/down.sh redis
 
 ##@ Autonomous loop
 .PHONY: loop

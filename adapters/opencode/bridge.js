@@ -71,6 +71,29 @@ function toolsetHealth() {
 
 // Call a core tool. Returns the parsed neutral result object, or a clean error if the backend
 // toolset is down.
+// Whether an incident is open (the war-room mode). The runtime-context injector reads this each
+// orchestrator turn; it tightens the posture only while an incident is open.
+export async function incidentStatus() {
+  try {
+    const r = await callTool("incident_status", {}, {})
+    return r?.open ? String(r.reason || "open") : null
+  } catch {
+    return null
+  }
+}
+
+// The worker's deterministic thread-state prefill (contract + decisions + open incident). Read each
+// worker turn so a worker starts with its task's state already present -- background awareness, not
+// retrieval. Returns the fenced block or "" (a fresh thread injects nothing).
+export async function threadState(sessionID) {
+  try {
+    const r = await callTool("thread_state", { session: sessionID }, {})
+    return String(r?.state || "")
+  } catch {
+    return ""
+  }
+}
+
 export function callTool(toolName, args, ctx = {}) {
   return new Promise((res) => {
     // gate on the toolset's health: a down backend returns a clean error, not a hang
@@ -80,19 +103,24 @@ export function callTool(toolName, args, ctx = {}) {
       res({ title: `${toolName} unavailable`, output: `${toolName} is unavailable: ${ts[1].reason}. The ${ts[0]} toolset backend is down.`, metadata: { toolset: ts[0] } })
       return
     }
+    // The payload travels via stdin (--json -), never argv: a large tool result would overflow the
+    // OS arg-length limit (spawn E2BIG). Only session/agent/call-id ride argv (always small).
     const argv = [
       "-m", "core.tools.cli", toolName,
-      "--json", JSON.stringify(args || {}),
+      "--json", "-",
       "--session", ctx.sessionID || "",
       "--agent", ctx.agent || "",
     ]
     if (ctx.callID) argv.push("--call-id", ctx.callID)
-    execFile(PYTHON, argv, { cwd: ROOT, env: childEnv(), timeout: 20000, maxBuffer: 8 * 1024 * 1024 },
+    const proc = execFile(PYTHON, argv, { cwd: ROOT, env: childEnv(), timeout: 20000, maxBuffer: 8 * 1024 * 1024 },
       (err, stdout) => {
         if (err) { res({ title: `${toolName} failed`, output: String(err.message || err), metadata: {} }); return }
         try { res(JSON.parse(stdout)) }
         catch { res({ title: `${toolName} ok`, output: String(stdout).trim(), metadata: {} }) }
       })
+    proc.stdin.on("error", () => {})   // a closed stdin (child exited early) must not throw
+    proc.stdin.write(JSON.stringify(args || {}))
+    proc.stdin.end()
   })
 }
 

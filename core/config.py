@@ -72,8 +72,6 @@ class Deploy:
     local_min_free_gib: int = 24
     nas_min_free_gib: int = 120
     worker_unit: str = "fools-worker"
-    redis_container: str = "fools-redis"
-    redis_image: str = "redis:7-alpine"
     spark_remote_url: str = "https://github.com/mrbende/DeepSeek-v4-Flash-One-DGX-Spark.git"
     spark_fool_dir: str = field(default_factory=lambda: os.path.expanduser("~/Recipes/fools-trick-spark"))
     fool_ablate: int = 1
@@ -94,7 +92,6 @@ class Config:
     worker_keep_recent: int
 
     memory_db: str
-    redis_url: str
     scratch_dir: str
     memory_enabled: bool
     worker_tool_result_cap: int
@@ -106,6 +103,7 @@ class Config:
     library_api_url: str = "http://127.0.0.1:8080"
     library_embed_url: str = "http://fool:8001"
     library_inbox_dir: str = "/mnt/empress/library/inbox"
+    chars_per_token: float = 2.5   # the estimator's divisor; the adapter reads this, no mirror
 
     primaries: tuple[str, ...] = ("build", "plan")
     workers: tuple[str, ...] = ("explore", "general", "reviewer")
@@ -199,7 +197,10 @@ def load(config_dir: Optional[Path] = None) -> Config:
     orchestrator = _endpoint(orch_backend, "orchestrator", "ORCHESTRATOR_URL", "ORCHESTRATOR_MODEL_ID", "ORCHESTRATOR_API_KEY")
     worker = _endpoint(worker_backend, "worker", "WORKER_URL", "WORKER_MODEL_ID", "WORKER_API_KEY")
 
-    # Worker serving physics + concurrency come from the selected worker backend.
+    # Worker serving physics + concurrency come from the selected worker backend. A kind: cloud
+    # backend serves nothing locally, so there are no weights/serving physics to derive -- skip
+    # them (the GGUF/quant machinery is self-hosted only).
+    is_cloud = worker_backend.get("kind") == "cloud"
     serve = worker_backend.get("serve", {})
     def sw(k: str, env: str, default):  # noqa: E731 -- small local getter over the backend's serve block
         return _get(serve, k, env, default)
@@ -212,10 +213,10 @@ def load(config_dir: Optional[Path] = None) -> Config:
     if isinstance(w_candidates, str):
         w_candidates = w_candidates.split()
     weights = Weights(
-        repo=w_repo,
-        quant=w_quant,
-        candidates=tuple(w_candidates),
-        file=worker_backend.get("serve", {}).get("file", f"{worker.model_id}.{w_quant}.gguf"),
+        repo=w_repo if not is_cloud else "",
+        quant=w_quant if not is_cloud else "",
+        candidates=tuple() if is_cloud else tuple(w_candidates),
+        file="" if is_cloud else worker_backend.get("serve", {}).get("file", f"{worker.model_id}.{w_quant}.gguf"),
     )
 
     serving_worker = ServingWorker(
@@ -244,8 +245,6 @@ def load(config_dir: Optional[Path] = None) -> Config:
         local_min_free_gib=int(_get(dep, "weights.local_min_free_gib", "LOCAL_MIN_FREE_GIB", 24)),
         nas_min_free_gib=int(_get(dep, "weights.nas_min_free_gib", "NAS_MIN_FREE_GIB", 120)),
         worker_unit=_get(worker_backend, "unit", "WORKER_UNIT", "fools-worker"),
-        redis_container=_get(dep, "redis.container", "REDIS_CONTAINER", "fools-redis"),
-        redis_image=_get(dep, "redis.image", "REDIS_IMAGE", "redis:7-alpine"),
         spark_remote_url=_get(orch_backend, "remote_url", "SPARK_REMOTE_URL",
                               "https://github.com/mrbende/DeepSeek-v4-Flash-One-DGX-Spark.git"),
         spark_fool_dir=os.path.expanduser(_get(orch_backend, "fool_dir", "FOOL_SPARK_DIR", "~/Recipes/fools-trick-spark")),
@@ -260,14 +259,13 @@ def load(config_dir: Optional[Path] = None) -> Config:
         worker_ctx_per_slot=worker_ctx,
         window_input_tokens=_get(merged, "memory.window_input_tokens", "WINDOW_INPUT_TOKENS", 160000),
         decode_headroom=_get(merged, "memory.decode_headroom", "DECODE_HEADROOM", 96000),
-        worker_input_tokens=_get(merged, "memory.worker_input_tokens", "WORKER_INPUT_TOKENS", 26000),
-        worker_decode_headroom=_get(merged, "memory.worker_decode_headroom", "WORKER_DECODE_HEADROOM", 16000),
+        worker_input_tokens=_get(merged, "memory.worker_input_tokens", "WORKER_INPUT_TOKENS", 18000),
+        worker_decode_headroom=_get(merged, "memory.worker_decode_headroom", "WORKER_DECODE_HEADROOM", 14000),
         worker_keep_recent=_get(merged, "memory.worker_keep_recent", "WORKER_KEEP_RECENT", 3),
         # Default: half the worker input budget, so one read can never alone approach the slot.
         worker_tool_result_cap=_get(merged, "memory.worker_tool_result_cap", "WORKER_TOOL_RESULT_CAP", 8000),
         memory_db=_get(merged, "memory.db", "MEMORY_DB",
                        os.path.expanduser("~/.local/share/fools-trick/memory.db")),
-        redis_url=_get(merged, "memory.redis_url", "REDIS_URL", "redis://127.0.0.1:6379"),
         scratch_dir=_get(merged, "memory.scratch_dir", "SCRATCH_DIR", "/tmp/fools-trick/scratch"),
         memory_enabled=_get(merged, "memory.enabled", "MEMORY_ENABLED", True),
         library_api_url=_get(merged, "library.api_url", "LIBRARY_API_URL", "http://127.0.0.1:8080"),

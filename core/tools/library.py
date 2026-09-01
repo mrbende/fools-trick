@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import urllib.parse
 import urllib.request
 
@@ -60,6 +61,56 @@ def library_search(args: dict, ctx: ToolContext, log) -> dict:
                      f"{(h.get('snippet') or '')[:180]}")
     return {"title": f"search: {q} ({len(hits)})", "output": "\n".join(lines),
             "metadata": {"hits": len(hits)}}
+
+
+def _prior_line(h: dict) -> str:
+    """One labeled prior line: score, title, year (recency matters -- staleness is invisible without
+    it), and the canonical reference. The year is recovered from the source_path/filename."""
+    cid = h.get("canonical_id", "?")
+    idx = h.get("chunk_index", "?")
+    snippet = (h.get("snippet") or "").strip()
+    sp = h.get("source_path", "")
+    ym = re.search(r"[/_]((?:19|20)\d{2})[/_]", sp) or re.search(r"\b((?:19|20)\d{2})\b", sp)
+    year = ym.group(1) if ym else "?"
+    return f"- [{h.get('score', 0):.2f}] {h.get('title') or cid} ({year}, {cid}#{idx})\n  {snippet}"
+
+
+def library_prior(args: dict, ctx: ToolContext, log) -> dict:
+    """The associative prior: a small, gated, labeled block of relevant library material to pre-prime
+    a task. NOT a search result dump -- a prior's job is precision, not recall (a related-but-wrong
+    distractor degrades the model more than injecting nothing; "Power of Noise", Cuconasu 2024).
+
+    The trigger is load-bearing: we probe the corpus and only return a block if a hit clears the
+    relevance floor. A task with no real corpus overlap gets an empty prior -- never a noise block.
+    """
+    q = str(args.get("query", "")).strip()
+    if not q:
+        return {"title": "library_prior", "output": "", "metadata": {"injected": False, "reason": "empty query"}}
+    floor = float(args.get("floor") or 0.45)
+    cap = int(args.get("cap") or 5)
+    max_chars = int(args.get("max_chars") or 1800)
+    try:
+        d = _api("/search", {"q": q, "k": cap * 2})
+    except Exception:
+        return {"title": "library_prior", "output": "", "metadata": {"injected": False, "reason": "search unreachable"}}
+    hits = d if isinstance(d, list) else d.get("results", [])
+    # the gate: only keep hits above the relevance floor; below it, inject nothing (not a low hit)
+    strong = [h for h in hits if float(h.get("score", 0)) >= floor][:cap]
+    if not strong:
+        return {"title": "library_prior", "output": "", "metadata": {"injected": False, "reason": "no hit above the relevance floor"}}
+    lines = []
+    used = 0
+    for h in strong:
+        line = _prior_line(h)
+        if used + len(line) > max_chars:
+            break
+        lines.append(line)
+        used += len(line)
+    block = ("<library-prior>\nReference material pulled by association (NOT new input; not "
+             "authoritative -- verify against library_read if you cite it). Precedence: contract > "
+             "thread state > this prior.\n\n" + "\n".join(lines) + "\n</library-prior>")
+    return {"title": f"library_prior ({len(lines)} chunks)", "output": block,
+            "metadata": {"injected": True, "chunks": len(lines)}}
 
 
 def library_read(args: dict, ctx: ToolContext, log) -> dict:

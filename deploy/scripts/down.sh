@@ -7,13 +7,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/env.sh"
 source "$HERE/lib.sh"
 
-down_redis() {
-  docker ps -a --format '{{.Names}}' 2>/dev/null | grep -qx "$REDIS_CONTAINER" || { ok "redis already stopped"; return 0; }
-  say "stopping redis ($REDIS_CONTAINER) -- short-term memory is ephemeral; SQLite store persists"
-  docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || warn "docker rm returned nonzero"
-  ok "redis stopped"
-}
-
 down_worker() {
   if ! worker_active && ! port_in_use "$WORKER_PORT"; then ok "worker already stopped"; return 0; fi
   say "stopping worker unit ($WORKER_UNIT)"
@@ -35,9 +28,8 @@ down_fool() {
 }
 
 case "${1:-all}" in
-  redis)  down_redis ;;
   worker) down_worker ;;
   fool)   down_fool ;;
-  all)    down_worker; down_fool; down_redis ;;
-  *) die "usage: down.sh {redis|worker|fool|all}" ;;
+  all)    down_worker; down_fool ;;
+  *) die "usage: down.sh {worker|fool|all}" ;;
 esac

@@ -136,7 +136,7 @@ class TestLiveWorker(unittest.TestCase):
         from core.tools import memory
         from core.log.log import MemoryLog
         cfg = core.config.load()
-        log = MemoryLog(cfg.memory_db, cfg.redis_url)
+        log = MemoryLog(cfg.memory_db)
         try:
             out = memory.delegate_cheap({"task": "reply with exactly: pong", "max_tokens": 20},
                                         None, log)

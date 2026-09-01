@@ -1,7 +1,7 @@
-"""MemoryLog + ThreadResolver tests. stdlib unittest, no harness on disk.
+"""MemoryLog + ThreadResolver tests. stdlib unittest, no services on disk.
 
-Redis round-trip runs only if reachable (skipped cleanly otherwise, like the JS suite).
-The SQLite-fallback, thread resolution, and expand paths all run fully offline.
+The Event Log writes synchronously to SQLite (WAL); every episode is addressable by seq
+immediately. There is no write-stream to drain.
 """
 
 import os
@@ -12,15 +12,7 @@ import unittest
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..", "..")))
 
 from core.log.log import MemoryLog  # noqa: E402
-from core.log.redis import Redis, RedisUnavailable  # noqa: E402
-from core.log.thread import MISSING, dict_resolver, identity_resolver  # noqa: E402
-
-
-def _redis_up() -> bool:
-    try:
-        return Redis(timeout=0.5).cmd("PING") == "PONG"
-    except RedisUnavailable:
-        return False
+from core.log.thread import dict_resolver, identity_resolver  # noqa: E402
 
 
 class TestThreadResolver(unittest.TestCase):
@@ -47,15 +39,13 @@ class TestThreadResolver(unittest.TestCase):
         self.assertIn(r.resolve("a"), {"a", "b"})
 
 
-class TestMemoryLogOffline(unittest.TestCase):
-    """With Redis down, write_episode must fall back to SQLite and stay searchable/expandable."""
+class TestMemoryLog(unittest.TestCase):
+    """Direct synchronous writes to SQLite; searchable + recoverable by seq."""
 
     def setUp(self):
         self._tmp = tempfile.TemporaryDirectory()
-        # point at an unreachable redis so the fallback path is exercised deterministically
         self.log = MemoryLog(
             db_path=os.path.join(self._tmp.name, "m.db"),
-            redis_url="redis://127.0.0.1:6399",  # nothing listens here
             resolve_thread=identity_resolver().resolve,
         )
 
@@ -63,11 +53,12 @@ class TestMemoryLogOffline(unittest.TestCase):
         self.log.close()
         self._tmp.cleanup()
 
-    def test_write_falls_back_to_sqlite_and_searchable(self):
-        self.log.write_episode(
+    def test_write_returns_seq_and_is_searchable(self):
+        seq = self.log.write_episode(
             thread="T", session="s", agent="build", role="memory",
             content="decided to use q8_0 KV for the hybrid arch",
         )
+        self.assertIsNotNone(seq)  # synchronous write is addressable immediately
         hits = self.log.search(thread="T", query="q8_0 KV")
         self.assertGreaterEqual(len(hits), 1)
 
@@ -80,38 +71,16 @@ class TestMemoryLogOffline(unittest.TestCase):
         self.assertIsNotNone(ep)
         self.assertEqual(ep.content, "anchor fact")
 
-    def test_drain_redelivery_does_not_duplicate(self):
-        # The redelivery hole: a crash between the SQLite append and the Redis ack would
-        # redeliver the stream entry. append_if_absent must keep the original seq, not mint a dup.
-        store = self.log.store
-        s1 = store.append_if_absent(thread="T", session="s", agent="a", role="memory",
-                                    content="crash-window entry", ts=111)
-        s2 = store.append_if_absent(thread="T", session="s", agent="a", role="memory",
-                                    content="crash-window entry", ts=111)
-        self.assertEqual(s1, s2)  # same seq, no duplicate
-        self.assertEqual(len(self.log.search(thread="T", query="crash-window")), 1)
+    def test_concurrent_writes_are_all_recorded(self):
+        # many writers, one store: SQLite WAL serializes; nothing is lost
+        for i, agent in enumerate(("explore", "general", "reviewer")):
+            self.log.write_episode(thread="C", session=f"w{i}", agent=agent, role="assistant",
+                                   content=f"concurrent write {i} about sliding window")
+        hits = self.log.search(thread="C", query="sliding")
+        self.assertGreaterEqual(len(hits), 3)
 
-
-@unittest.skipUnless(_redis_up(), "redis not reachable")
-class TestMemoryLogRedis(unittest.TestCase):
-    def setUp(self):
-        self._tmp = tempfile.TemporaryDirectory()
-        self.log = MemoryLog(
-            db_path=os.path.join(self._tmp.name, "m.db"),
-            resolve_thread=identity_resolver().resolve,
-        )
-        self.log.redis.cmd("DEL", "fools:mem:stream")
-
-    def tearDown(self):
-        self.log.close()
-        self._tmp.cleanup()
-
-    def test_stream_drains_to_sqlite(self):
-        self.log.write_episode(thread="C", session="o", agent="build", role="user",
-                               content="concurrent write about sliding window")
-        self.log.write_episode(thread="C", session="w1", agent="explore", role="assistant",
-                               content="concurrent write about memory recall")
-        self.assertGreaterEqual(len(self.log.search(thread="C", query="sliding recall")), 1)
+    def test_drain_is_a_noop_compat(self):
+        self.assertEqual(self.log.drain(), 0)
 
 
 if __name__ == "__main__":

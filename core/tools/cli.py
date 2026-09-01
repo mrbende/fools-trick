@@ -29,10 +29,12 @@ _TOOLS = {
     "note": tools.note,
     "promote": tools.promote,
     "record_contract": tools.record_contract,
+    "incident": tools.incident,
     "report": tools.report,
     "delegate_cheap": tools.delegate_cheap,
     "scratch_write": tools.scratch_write,
     "library_search": lib.library_search,
+    "library_prior": lib.library_prior,
     "library_read": lib.library_read,
     "library_query": lib.library_query,
     "library_fetch": lib.library_fetch,
@@ -107,7 +109,24 @@ def _run_tripcheck(payload: dict, log) -> None:
                       "metadata": {"fired": len(fired), "latest": rs[0].session_id}}))
 
 
-_SPECIAL = {"drain": _run_drain, "trace": _run_trace, "tripcheck": _run_tripcheck}
+def _run_incident_status(payload: dict, log) -> None:
+    # the runtime-context injector reads this each orchestrator turn to learn whether an incident is
+    # open (and why) -- so the posture tightens only while one is active.
+    from core.tools.memory import incident_open
+    open_reason = incident_open(log, "")
+    print(json.dumps({"open": open_reason is not None, "reason": open_reason}))
+
+
+def _run_thread_state(payload: dict, log) -> None:
+    # the worker's deterministic state-prefill: contract + decisions + open incident for the thread.
+    # Read by the adapter each worker turn so a worker starts with its task's state already present.
+    from core.tools.memory import thread_state
+    thread = log.resolve_thread(payload.get("session") or "")
+    print(json.dumps({"state": thread_state(log, thread)}))
+
+
+_SPECIAL = {"drain": _run_drain, "trace": _run_trace, "tripcheck": _run_tripcheck,
+            "incident_status": _run_incident_status, "thread_state": _run_thread_state}
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -119,8 +138,10 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument("--call-id", default=None, help="ToolContext callID")
     args = parser.parse_args(argv)
 
+    # The payload travels via stdin when --json is "-", so large tool results never hit the OS
+    # argv length limit (a big read spilled to memory overflowed argv -> spawn E2BIG).
     try:
-        payload = json.loads(args.json or "{}")
+        payload = json.loads(sys.stdin.read() if args.json == "-" else (args.json or "{}"))
     except json.JSONDecodeError as e:
         print(json.dumps({"error": f"bad --json: {e}"}))
         return 2
@@ -129,7 +150,6 @@ def main(argv: list[str] | None = None) -> int:
     resolver = ThreadResolver(_parent_walker())
     log = MemoryLog(
         db_path=cfg.memory_db,
-        redis_url=cfg.redis_url,
         resolve_thread=resolver.resolve,
     )
     if args.tool in _SPECIAL:

@@ -11,6 +11,7 @@ from core.tools.memory import (
     promote,
     recall,
     record_contract,
+    incident,
     report,
     memory_search,
     memory_write,

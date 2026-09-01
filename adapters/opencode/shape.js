@@ -8,9 +8,12 @@
 //   reasoning part: { type:"reasoning", text }
 //   tool part: { type:"tool", callID, state:{ status, output, time:{ compacted? } } }
 
-// Must match core/context/estimate.py (_CHARS_PER_TOKEN): conservative on markup, errs OVER --
-// this estimate gates the worker slot, a hard wall.
-const est = (s) => Math.ceil((s ? String(s).length : 0) / 2.5)
+import { cfgNum } from "./bridge.js"
+
+// The token estimator's divisor. Single source of truth is config.chars_per_token (the Python core's
+// estimator reads the same value); no mirrored constant. Conservative on markup, errs OVER -- this
+// estimate gates the worker slot, a hard wall.
+const est = (s) => Math.ceil((s ? String(s).length : 0) / cfgNum("CHARS_PER_TOKEN", "chars_per_token", 2.5))
 
 export function agentOf(msgs) {
   for (let i = msgs.length - 1; i >= 0; i--) if (msgs[i]?.info?.agent) return msgs[i].info.agent
@@ -84,14 +87,25 @@ export function toWorkerTurns(msgs) {
   }))
 }
 
-// The orchestrator sliding view: text turns only (the slide operates on raw turn text).
-export function toOrchestratorTurns(msgs) {
-  return msgs.map((m) => ({
-    role: m?.info?.role || m?.role || "",
-    agent: m?.info?.agent || "",
-    session: m?.info?.sessionID || "",
-    text: (m?.parts || []).filter((p) => p?.type === "text").map((p) => p.text).join(" "),
-    reasoning: (m?.parts || []).filter((p) => p?.type === "reasoning").map((p) => p.text).join(" "),
-  }))
-}
+  // The orchestrator sliding view. The slide's input budget must see the WHOLE context, including
+  // tool results (reads, library, web) -- they are the bulk of a real session. Dropping them makes
+  // the slide undercount and never fire (the 800k-hang bug). Tool outputs are folded into the turn's
+  // text for accounting; the slide still drops whole turns, not individual results.
+  export function toOrchestratorTurns(msgs) {
+    return msgs.map((m) => {
+      const parts = m?.parts || []
+      const text = parts.filter((p) => p?.type === "text").map((p) => p.text).join(" ")
+      const reasoning = parts.filter((p) => p?.type === "reasoning").map((p) => p.text).join(" ")
+      // tool result bulk counts toward the window so the slide's budget reflects reality
+      const toolText = parts.filter((p) => p?.type === "tool" && p?.state?.status === "completed")
+        .map((p) => p.state.output || "").join(" ")
+      return {
+        role: m?.info?.role || m?.role || "",
+        agent: m?.info?.agent || "",
+        session: m?.info?.sessionID || "",
+        text: toolText ? `${text} ${toolText}` : text,
+        reasoning,
+      }
+    })
+  }
 

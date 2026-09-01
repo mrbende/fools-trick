@@ -8,26 +8,6 @@ HERE="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 source "$HERE/env.sh"
 source "$HERE/lib.sh"
 
-up_redis() {
-  [ "${MEMORY_ENABLED:-1}" = "1" ] || { dim "memory disabled; skipping redis"; return 0; }
-  say "starting redis (short-term memory + write-queue) as $REDIS_CONTAINER"
-  # Ephemeral by design: short-term memory. The durable episode store is SQLite ($MEMORY_DB),
-  # which persists across make down. So the container needs no volume -- if it dies, short-term
-  # memory is gone but the source of truth is intact and Redis rewarms from it.
-  if docker ps --format '{{.Names}}' 2>/dev/null | grep -qx "$REDIS_CONTAINER"; then
-    ok "redis already running ($REDIS_CONTAINER)"; return 0
-  fi
-  docker rm -f "$REDIS_CONTAINER" >/dev/null 2>&1 || true
-  docker run -d --name "$REDIS_CONTAINER" -p "127.0.0.1:${REDIS_PORT}:6379" \
-    "$REDIS_IMAGE" redis-server --save "" --appendonly no >/dev/null \
-    || die "failed to start redis container (is docker running?)"
-  for _ in $(seq 1 20); do
-    docker exec "$REDIS_CONTAINER" redis-cli ping 2>/dev/null | grep -q PONG && { ok "redis healthy on :$REDIS_PORT"; return 0; }
-    sleep 0.5
-  done
-  die "redis did not become healthy"
-}
-
 up_camofox() {
   # The web/research layer: an anti-detection Firefox server. Real-time web is a first-class agent
   # capability, so it is brought up with the harness rather than lazy-started mid-task (which added
@@ -137,10 +117,9 @@ up_fool() {
 }
 
 case "${1:-all}" in
-  redis)   up_redis ;;
   camofox) up_camofox ;;
   worker)  up_worker ;;
   fool)    up_fool ;;
-  all)     up_redis; up_camofox; up_worker; up_fool ;;
-  *) die "usage: up.sh {redis|camofox|worker|fool|all}" ;;
+  all)     up_camofox; up_worker; up_fool ;;
+  *) die "usage: up.sh {camofox|worker|fool|all}" ;;
 esac
