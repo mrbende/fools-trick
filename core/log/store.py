@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import os
 import sqlite3
+import threading
 import time
 from typing import Optional
 
@@ -58,11 +59,13 @@ class EpisodeStore:
         parent = os.path.dirname(path)
         if parent:
             os.makedirs(parent, exist_ok=True)
-        # check_same_thread=False: the store may be touched from a drain thread and a
-        # request thread; access is serialized by the single-writer discipline above it.
         self._db = sqlite3.connect(path, check_same_thread=False)
+        # WAL gives concurrent readers + a single writer; the lock serializes the writers.
+        # (The earlier write-stream that serialized them was removed; this lock is the boundary.)
+        self._lock = threading.Lock()
         self._db.execute("PRAGMA journal_mode = WAL;")
         self._db.execute("PRAGMA synchronous = NORMAL;")
+        self._db.execute("PRAGMA busy_timeout = 5000;")
         self._db.executescript(_SCHEMA)
         self._db.commit()
 
@@ -78,13 +81,14 @@ class EpisodeStore:
     ) -> Seq:
         """Append an episode. Returns its seq (the Event Log address)."""
         ts = ts if ts is not None else int(time.time() * 1000)
-        cur = self._db.execute(
-            "INSERT INTO episodes (thread, session, agent, role, content, ts) "
-            "VALUES (?, ?, ?, ?, ?, ?)",
-            (thread, session, agent, role, content, ts),
-        )
-        self._db.commit()
-        return int(cur.lastrowid)
+        with self._lock:
+            cur = self._db.execute(
+                "INSERT INTO episodes (thread, session, agent, role, content, ts) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (thread, session, agent, role, content, ts),
+            )
+            self._db.commit()
+            return int(cur.lastrowid)
 
     def search(self, *, thread: str, query: str, k: int = 10,
                role: Optional[str] = None, agent: Optional[str] = None,

@@ -82,6 +82,19 @@ class TestMemoryLog(unittest.TestCase):
     def test_drain_is_a_noop_compat(self):
         self.assertEqual(self.log.drain(), 0)
 
+    def test_concurrent_writers_are_serialized(self):
+        # the write path is one SQLite connection behind a lock; concurrent worker writes must
+        # all land (the multi-writer regression that followed the write-stream removal).
+        import threading
+        def w(i):
+            for j in range(20):
+                self.log.write_episode(thread="C", session=f"w{i}", agent="a", role="memory",
+                                       content=f"fact {i}-{j}")
+        threads = [threading.Thread(target=w, args=(i,)) for i in range(8)]
+        for t in threads: t.start()
+        for t in threads: t.join()
+        self.assertGreaterEqual(len(self.log.search(thread="C", query="fact", k=200)), 160)
+
 
 if __name__ == "__main__":
     unittest.main()
